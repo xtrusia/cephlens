@@ -8,6 +8,7 @@ use crate::{
     config::ResolvedConfig,
     model::{ClusterSummary, NodeSummary, OsdSummary, Snapshot},
     ssh::ssh_capture,
+    stream::NODE_FACTS_SNIPPET,
     util::{ptr_f64, ptr_i64, ptr_str, ptr_u64},
 };
 
@@ -140,12 +141,9 @@ pub(crate) fn parse_osds(tree: &Value, df: &Value) -> Vec<OsdSummary> {
 }
 
 fn collect_node(host: &str) -> NodeSummary {
-    let command = r#"
-printf 'hostname=%s\n' "$(hostname)"
-printf 'sudo='; if sudo -n true 2>/dev/null; then echo ok; else echo needs_password; fi
-printf 'microceph='; snap list microceph 2>/dev/null | awk 'NR==2 {print $2" "$4" "$6; found=1} END {if (!found) print "missing"}'
-printf 'ceph_osd_processes='; pgrep -c 'ceph-osd' || true
-printf 'osd_ids='; pgrep -af '[c]eph-osd --cluster ceph' | sed -n 's/.*--id \([0-9][0-9]*\).*/\1/p' | paste -sd, - || true
+    let command = format!(
+        r#"
+{facts}
 read _ user1 nice1 system1 idle1 iowait1 irq1 softirq1 steal1 _ _ < /proc/stat
 sleep 0.2
 read _ user2 nice2 system2 idle2 iowait2 irq2 softirq2 steal2 _ _ < /proc/stat
@@ -157,12 +155,18 @@ total_a=$((idle_a + non_idle_a))
 total_b=$((idle_b + non_idle_b))
 diff_total=$((total_b - total_a))
 diff_idle=$((idle_b - idle_a))
-printf 'cpu_percent='
-awk -v total="$diff_total" -v idle="$diff_idle" 'BEGIN {if (total > 0) printf "%.1f\n", (total-idle)*100/total; else printf "0.0\n"}'
-printf 'mem_percent='
-awk '/MemTotal:/ {total=$2} /MemAvailable:/ {avail=$2} END {if (total > 0) printf "%.1f\n", (total-avail)*100/total; else printf "0.0\n"}' /proc/meminfo
-"#;
-    match ssh_capture(host, command) {
+cpu_pct=$(awk -v total="$diff_total" -v idle="$diff_idle" 'BEGIN {{if (total > 0) printf "%.1f", (total-idle)*100/total; else printf "0.0"}}')
+printf 'hostname=%s\n' "$hostname"
+printf 'sudo=%s\n' "$sudo_state"
+printf 'microceph=%s\n' "$micro"
+printf 'ceph_osd_processes=%s\n' "$count"
+printf 'osd_ids=%s\n' "$ids"
+printf 'cpu_percent=%s\n' "$cpu_pct"
+printf 'mem_percent=%s\n' "$mem_pct"
+"#,
+        facts = NODE_FACTS_SNIPPET
+    );
+    match ssh_capture(host, &command) {
         Ok(output) => {
             let map = parse_key_values(&output);
             NodeSummary {

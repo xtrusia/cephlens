@@ -24,17 +24,23 @@ done
     )
 }
 
+// Shared node facts collection: sets hostname, sudo_state, micro, count, ids,
+// and mem_pct shell variables. Used by both the one-shot probe in collect.rs
+// and the streaming loop below.
+pub(crate) const NODE_FACTS_SNIPPET: &str = r#"hostname=$(hostname)
+if sudo -n true 2>/dev/null; then sudo_state=ok; else sudo_state=needs_password; fi
+micro=$(snap list microceph 2>/dev/null | awk 'NR==2 {print $2" "$4" "$6; found=1} END {if (!found) print "missing"}')
+count=$(pgrep -c '[c]eph-osd' 2>/dev/null || echo 0)
+ids=$(pgrep -af '[c]eph-osd --cluster ceph' 2>/dev/null | sed -n 's/.*--id \([0-9][0-9]*\).*/\1/p' | paste -sd, -)
+mem_pct=$(awk '/MemTotal:/ {total=$2} /MemAvailable:/ {avail=$2} END {if (total > 0) printf "%.1f", (total-avail)*100/total; else printf "0.0"}' /proc/meminfo)"#;
+
 pub(crate) fn node_stream_command(interval_secs: u64) -> String {
     format!(
         r#"
 prev_total=0
 prev_idle=0
 while true; do
-  hostname=$(hostname)
-  if sudo -n true 2>/dev/null; then sudo_state=ok; else sudo_state=needs_password; fi
-  micro=$(snap list microceph 2>/dev/null | awk 'NR==2 {{print $2" "$4" "$6; found=1}} END {{if (!found) print "missing"}}')
-  count=$(pgrep -c '[c]eph-osd' 2>/dev/null || echo 0)
-  ids=$(pgrep -af '[c]eph-osd --cluster ceph' 2>/dev/null | sed -n 's/.*--id \([0-9][0-9]*\).*/\1/p' | paste -sd, -)
+{facts}
   read _ user nice system idle iowait irq softirq steal _ _ < /proc/stat
   idle_all=$((idle + iowait))
   non_idle=$((user + nice + system + irq + softirq + steal))
@@ -52,11 +58,11 @@ while true; do
   fi
   prev_total=$total
   prev_idle=$idle_all
-  mem_pct=$(awk '/MemTotal:/ {{total=$2}} /MemAvailable:/ {{avail=$2}} END {{if (total > 0) printf "%.1f", (total-avail)*100/total; else printf "0.0"}}' /proc/meminfo)
   printf '{{"type":"node","hostname":"%s","sudo":"%s","microceph":"%s","ceph_osd_processes":%s,"osd_ids":"%s","cpu_percent":%s,"mem_percent":%s}}\n' "$hostname" "$sudo_state" "$micro" "$count" "$ids" "$cpu_pct" "$mem_pct"
   sleep {interval_secs}
 done
-"#
+"#,
+        facts = NODE_FACTS_SNIPPET,
     )
 }
 

@@ -148,6 +148,7 @@ s      stop trace runners
 t      start temp trace runners with latency threshold 1ms
 0      start temp trace runners and show all observed ops
 x      clear captured trace events
+v      open the osdtrace targets view (Esc returns)
 [/-    shrink event log
 ]/+    grow event log
 Tab    focus next panel

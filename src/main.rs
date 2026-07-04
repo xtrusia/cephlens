@@ -64,6 +64,7 @@ const TEXT: Color = Color::Rgb(198, 208, 219);
 const EVENT_LOG_MIN_HEIGHT: u16 = 3;
 const EVENT_LOG_DEFAULT_HEIGHT: u16 = 6;
 const EVENT_LOG_MAX_HEIGHT: u16 = 16;
+const SESSION_SNAPSHOT_LIMIT: usize = 10_000;
 
 #[derive(Parser, Debug)]
 #[command(name = "cephlens")]
@@ -295,6 +296,7 @@ struct App {
     trace_stop: Arc<AtomicBool>,
     stream_stop: Arc<AtomicBool>,
     session_path: Option<PathBuf>,
+    session_records: usize,
     last_refresh: Instant,
 }
 
@@ -544,6 +546,7 @@ fn run_live_tui(config_path: PathBuf, cfg: ResolvedConfig) -> Result<()> {
         trace_stop: Arc::new(AtomicBool::new(false)),
         stream_stop: Arc::new(AtomicBool::new(false)),
         session_path: Some(session_path),
+        session_records: 0,
         last_refresh: Instant::now() - Duration::from_secs(cfg.refresh_secs),
     };
     app.log("cephlens live session started");
@@ -617,6 +620,7 @@ fn run_replay_tui(file: PathBuf) -> Result<()> {
         trace_stop: Arc::new(AtomicBool::new(false)),
         stream_stop: Arc::new(AtomicBool::new(false)),
         session_path: None,
+        session_records: 0,
         last_refresh: Instant::now(),
     };
     if let Mode::Replay { snapshots, .. } = &app.mode {
@@ -722,10 +726,6 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Result<bool> {
                 Ok(false)
             }
             KeyCode::Char('s') => {
-                stop_trace_follow(app);
-                Ok(false)
-            }
-            KeyCode::Char('z') => {
                 stop_trace_follow(app);
                 Ok(false)
             }
@@ -946,10 +946,6 @@ fn handle_trace_key(app: &mut App, key: KeyEvent) -> Result<bool> {
             stop_trace_follow(app);
             Ok(false)
         }
-        KeyCode::Char('z') => {
-            stop_trace_follow(app);
-            Ok(false)
-        }
         KeyCode::Char('x') => {
             app.trace_events.clear();
             app.trace_series.clear();
@@ -995,7 +991,9 @@ fn shutdown_streams(app: &App, wait_for_cleanup: bool) -> Vec<CleanupResult> {
         cleanup_trace_runners_async(app.hosts.clone(), app.trace_session.clone());
         Vec::new()
     };
-    if live_streams_active(app) {
+    // Only the quit path may block; stream threads need this window to kill
+    // their ssh children before the process exits.
+    if wait_for_cleanup && live_streams_active(app) {
         thread::sleep(Duration::from_millis(1200));
     }
     cleanup
@@ -1298,9 +1296,13 @@ fn persist_and_apply_config(app: &mut App) {
     }
 
     let current = ConfigDraft::from_app(app);
-    let changed = current != draft;
-    if changed {
-        let _ = shutdown_streams(app, false);
+    let streams_changed = current.admin_host != draft.admin_host
+        || current.hosts != draft.hosts
+        || current.refresh_secs != draft.refresh_secs;
+    if current != draft {
+        if streams_changed {
+            let _ = shutdown_streams(app, false);
+        }
         app.profile = draft.profile.clone();
         app.admin_host = draft.admin_host.clone();
         app.hosts = draft.hosts.clone();
@@ -1314,23 +1316,29 @@ fn persist_and_apply_config(app: &mut App) {
             sha256: draft_optional(&draft.osdtrace_sha256),
             allow_unverified: draft.osdtrace_allow_unverified,
         };
-        app.stream_stop = Arc::new(AtomicBool::new(false));
-        app.trace_stop = Arc::new(AtomicBool::new(false));
-        app.trace_following = false;
-        app.trace_active = 0;
-        app.trace_session = None;
-        app.stream_statuses.clear();
-        app.node_summaries.clear();
-        app.snapshot = None;
-        app.collecting = false;
-        app.last_refresh = Instant::now() - app.refresh;
-        start_live_streams(app);
+        if streams_changed {
+            app.stream_stop = Arc::new(AtomicBool::new(false));
+            app.trace_stop = Arc::new(AtomicBool::new(false));
+            app.trace_following = false;
+            app.trace_active = 0;
+            app.trace_session = None;
+            app.stream_statuses.clear();
+            app.node_summaries.clear();
+            app.snapshot = None;
+            app.collecting = false;
+            app.last_refresh = Instant::now() - app.refresh;
+            start_live_streams(app);
+        }
     }
 
     app.config_editor.draft = ConfigDraft::from_app(app);
     app.config_editor.dirty = false;
     app.config_editor.clamp_selection();
-    app.config_editor.message = format!("saved {} and refreshed ssh streams", path.display());
+    app.config_editor.message = if streams_changed {
+        format!("saved {} and restarted ssh streams", path.display())
+    } else {
+        format!("saved {}", path.display())
+    };
     app.log(format!("config saved to {}", path.display()));
 }
 
@@ -1462,14 +1470,7 @@ fn drain_worker_messages(app: &mut App) {
                 app.last_refresh = Instant::now();
                 match *result {
                     Ok(snapshot) => {
-                        if let Some(path) = &app.session_path {
-                            match append_snapshot(path, &snapshot) {
-                                Ok(()) => {
-                                    app.log(format!("snapshot recorded to {}", path.display()))
-                                }
-                                Err(err) => app.log(format!("record failed: {err:#}")),
-                            }
-                        }
+                        record_session_snapshot(app, &snapshot);
                         app.log(format!(
                             "snapshot ok: {} {} osds {}/{} up/in",
                             snapshot.cluster.health,
@@ -1591,11 +1592,7 @@ fn handle_stream_payload(app: &mut App, id: &str, payload: &str) -> Result<()> {
             nodes: ordered_nodes(app),
             osds: parse_osds(tree, df),
         };
-        if let Some(path) = &app.session_path
-            && let Err(err) = append_snapshot(path, &snapshot)
-        {
-            app.log(format!("record failed: {err:#}"));
-        }
+        record_session_snapshot(app, &snapshot);
         app.snapshot = Some(snapshot);
     } else if let Some(host) = id.strip_prefix("node:") {
         let node = parse_node_stream_payload(host, payload)?;
@@ -1606,6 +1603,26 @@ fn handle_stream_payload(app: &mut App, id: &str, payload: &str) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn record_session_snapshot(app: &mut App, snapshot: &Snapshot) {
+    let Some(path) = app.session_path.clone() else {
+        return;
+    };
+    if app.session_records >= SESSION_SNAPSHOT_LIMIT {
+        return;
+    }
+    match append_snapshot(&path, snapshot) {
+        Ok(()) => {
+            app.session_records += 1;
+            if app.session_records == SESSION_SNAPSHOT_LIMIT {
+                app.log(format!(
+                    "session recording stopped after {SESSION_SNAPSHOT_LIMIT} snapshots"
+                ));
+            }
+        }
+        Err(err) => app.log(format!("record failed: {err:#}")),
+    }
 }
 
 fn ordered_nodes(app: &App) -> Vec<NodeSummary> {
@@ -1752,7 +1769,6 @@ fn spawn_trace_run(app: &mut App, latency_ms: u64) {
     app.trace_events.clear();
     app.trace_series.clear();
     app.trace_following = true;
-    app.trace_latency_ms = latency_ms;
     app.trace_stop.store(true, Ordering::SeqCst);
     app.trace_stop = Arc::new(AtomicBool::new(false));
     app.trace_active = app.hosts.len();

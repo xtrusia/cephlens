@@ -38,6 +38,29 @@ pub(crate) fn load_snapshots(path: &Path) -> Result<Vec<Snapshot>> {
 pub(crate) fn create_session_path() -> Result<PathBuf> {
     let dir = PathBuf::from(".cephlens").join("sessions");
     fs::create_dir_all(&dir)?;
+    prune_old_sessions(&dir);
     let name = format!("{}.jsonl", Local::now().format("%Y%m%d-%H%M%S"));
     Ok(dir.join(name))
+}
+
+const SESSION_FILE_KEEP: usize = 20;
+
+fn prune_old_sessions(dir: &Path) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    let mut sessions = entries
+        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+        .filter(|path| path.extension().is_some_and(|ext| ext == "jsonl"))
+        .collect::<Vec<_>>();
+    if sessions.len() < SESSION_FILE_KEEP {
+        return;
+    }
+    // File names are timestamps, so lexical order is chronological. Keep room
+    // for the session about to be created.
+    sessions.sort();
+    let excess = sessions.len() + 1 - SESSION_FILE_KEEP;
+    for path in sessions.into_iter().take(excess) {
+        let _ = fs::remove_file(path);
+    }
 }
