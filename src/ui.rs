@@ -8,17 +8,40 @@ use ratatui::{
     widgets::{Block, BorderType, Borders, Cell, Clear, Paragraph, Row, Table, Wrap},
 };
 
+use crate::app::{
+    App, EVENT_LOG_MAX_HEIGHT, EVENT_LOG_MIN_HEIGHT, Mode, PanelFocus, StreamState, StreamStatus,
+    live_streams_active,
+};
+use crate::editor::ConfigDraft;
 use crate::model::NodeSummary;
 use crate::trace::{
     TraceGraphRow, dominant_component, trace_graph_rows as build_trace_graph_rows,
     trace_platform_label,
 };
 use crate::util::{clamp_bottom_scroll, clamp_top_scroll, short};
-use crate::{
-    ACCENT, App, BAD, BLUE, EVENT_LOG_MAX_HEIGHT, EVENT_LOG_MIN_HEIGHT, Insight, InsightLevel,
-    MUTED, Mode, OK, PanelFocus, StreamState, StreamStatus, TEXT, WARN, format_bytes,
-    format_compact_bytes, format_kb, live_streams_active,
-};
+
+const ACCENT: Color = Color::Rgb(93, 228, 199);
+const BLUE: Color = Color::Rgb(130, 170, 255);
+const OK: Color = Color::Rgb(195, 232, 141);
+const WARN: Color = Color::Rgb(255, 203, 107);
+const BAD: Color = Color::Rgb(255, 83, 112);
+const MUTED: Color = Color::Rgb(91, 99, 112);
+const TEXT: Color = Color::Rgb(198, 208, 219);
+
+#[derive(Clone, Copy, Debug)]
+enum InsightLevel {
+    Ok,
+    Info,
+    Warn,
+    Bad,
+}
+
+#[derive(Clone, Debug)]
+struct Insight {
+    level: InsightLevel,
+    text: String,
+}
+
 pub(crate) fn draw(frame: &mut Frame<'_>, app: &App) {
     let area = frame.area();
     frame.render_widget(Clear, area);
@@ -1072,7 +1095,7 @@ fn draw_config(frame: &mut Frame<'_>, app: &App, area: Rect) {
         } else {
             TEXT
         };
-        let row_index = crate::ConfigDraft::FIXED_ROWS + index;
+        let row_index = ConfigDraft::FIXED_ROWS + index;
         config_row(editor.selected == row_index, label, host.clone(), color)
     }));
     let total_rows = rows.len();
@@ -1554,4 +1577,38 @@ fn bar(ratio: f64, width: usize, _color: Color) -> String {
     let filled = (ratio * width as f64).round() as usize;
     let empty = width.saturating_sub(filled);
     format!("{}{}", "█".repeat(filled), "░".repeat(empty))
+}
+
+fn format_bytes(bytes: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
+    let mut value = bytes as f64;
+    let mut unit = 0;
+    while value >= 1024.0 && unit < UNITS.len() - 1 {
+        value /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{} {}", bytes, UNITS[unit])
+    } else {
+        format!("{value:.1} {}", UNITS[unit])
+    }
+}
+
+fn format_compact_bytes(bytes: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "K", "M", "G", "T"];
+    let mut value = bytes as f64;
+    let mut unit = 0;
+    while value >= 1024.0 && unit < UNITS.len() - 1 {
+        value /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{}{}", bytes, UNITS[unit])
+    } else {
+        format!("{value:.0}{}", UNITS[unit])
+    }
+}
+
+fn format_kb(kb: u64) -> String {
+    format_bytes(kb.saturating_mul(1024))
 }
