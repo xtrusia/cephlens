@@ -3,7 +3,7 @@ use std::{
     fs,
     path::Path,
     sync::{Arc, atomic::AtomicBool},
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 use anyhow::{Context, Result, anyhow};
@@ -484,7 +484,6 @@ fn persist_and_apply_config(app: &mut App) {
             app.node_summaries.clear();
             app.snapshot = None;
             app.collecting = false;
-            app.last_refresh = Instant::now() - app.refresh;
             start_live_streams(app);
         }
     }

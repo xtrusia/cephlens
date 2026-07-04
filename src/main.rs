@@ -4,7 +4,7 @@ use std::{
     path::PathBuf,
     sync::{Arc, atomic::AtomicBool, mpsc},
     thread,
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 use anyhow::{Result, anyhow};
@@ -275,7 +275,6 @@ fn run_live_tui(config_path: PathBuf, cfg: ResolvedConfig) -> Result<()> {
         stream_stop: Arc::new(AtomicBool::new(false)),
         session_path: Some(session_path),
         session_records: 0,
-        last_refresh: Instant::now() - Duration::from_secs(cfg.refresh_secs),
     };
     app.log("cephlens live session started");
     start_live_streams(&mut app);
@@ -349,7 +348,6 @@ fn run_replay_tui(file: PathBuf) -> Result<()> {
         stream_stop: Arc::new(AtomicBool::new(false)),
         session_path: None,
         session_records: 0,
-        last_refresh: Instant::now(),
     };
     if let Mode::Replay { snapshots, .. } = &app.mode {
         app.log(format!("{} snapshots available", snapshots.len()));

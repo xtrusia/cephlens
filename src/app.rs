@@ -147,7 +147,6 @@ pub(crate) struct App {
     pub(crate) stream_stop: Arc<AtomicBool>,
     pub(crate) session_path: Option<PathBuf>,
     pub(crate) session_records: usize,
-    pub(crate) last_refresh: Instant,
 }
 
 impl App {
@@ -337,7 +336,6 @@ pub(crate) fn drain_worker_messages(app: &mut App) {
         match msg {
             WorkerMsg::Snapshot(result) => {
                 app.collecting = false;
-                app.last_refresh = Instant::now();
                 match *result {
                     Ok(snapshot) => {
                         record_session_snapshot(app, &snapshot);
