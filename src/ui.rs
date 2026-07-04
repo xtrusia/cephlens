@@ -1012,6 +1012,56 @@ fn draw_config(frame: &mut Frame<'_>, app: &App, area: Rect) {
             editor.draft.refresh_secs.to_string(),
             BLUE,
         ),
+        config_row(
+            editor.selected == 2,
+            "trace_auto_start",
+            bool_label(editor.draft.trace_auto_start),
+            if editor.draft.trace_auto_start {
+                OK
+            } else {
+                MUTED
+            },
+        ),
+        config_row(
+            editor.selected == 3,
+            "trace_window_secs",
+            editor.draft.trace_window_secs.to_string(),
+            BLUE,
+        ),
+        config_row(
+            editor.selected == 4,
+            "trace_latency_ms",
+            editor.draft.trace_latency_ms.to_string(),
+            BLUE,
+        ),
+        config_row(
+            editor.selected == 5,
+            "trace_ttl_secs",
+            editor.draft.trace_ttl_secs.to_string(),
+            BLUE,
+        ),
+        config_row(
+            editor.selected == 6,
+            "osdtrace_url",
+            optional_config_value(&editor.draft.osdtrace_url, 72),
+            TEXT,
+        ),
+        config_row(
+            editor.selected == 7,
+            "osdtrace_sha256",
+            optional_config_value(&editor.draft.osdtrace_sha256, 72),
+            TEXT,
+        ),
+        config_row(
+            editor.selected == 8,
+            "osdtrace_allow_unverified",
+            bool_label(editor.draft.osdtrace_allow_unverified),
+            if editor.draft.osdtrace_allow_unverified {
+                WARN
+            } else {
+                MUTED
+            },
+        ),
     ];
     rows.extend(editor.draft.hosts.iter().enumerate().map(|(index, host)| {
         let label = format!("host[{}]", index + 1);
@@ -1020,15 +1070,26 @@ fn draw_config(frame: &mut Frame<'_>, app: &App, area: Rect) {
         } else {
             TEXT
         };
-        config_row(editor.selected == index + 2, label, host.clone(), color)
+        let row_index = crate::ConfigDraft::FIXED_ROWS + index;
+        config_row(editor.selected == row_index, label, host.clone(), color)
     }));
+    let total_rows = rows.len();
+    let visible_rows = table_visible_rows(chunks[1]);
+    let scroll = editor
+        .selected
+        .saturating_sub(visible_rows.saturating_sub(1));
+    let rows = rows
+        .into_iter()
+        .skip(scroll)
+        .take(visible_rows)
+        .collect::<Vec<_>>();
 
     frame.render_widget(
         Table::new(
             rows,
             [
                 Constraint::Length(3),
-                Constraint::Length(14),
+                Constraint::Length(27),
                 Constraint::Min(16),
             ],
         )
@@ -1036,7 +1097,13 @@ fn draw_config(frame: &mut Frame<'_>, app: &App, area: Rect) {
             Row::new(["", "Field", "Value"])
                 .style(Style::default().fg(MUTED).add_modifier(Modifier::BOLD)),
         )
-        .block(panel(" live config ")),
+        .block(panel_with_style(
+            format!(
+                " live config{} ",
+                scroll_suffix(total_rows, visible_rows, scroll, false)
+            ),
+            if editor.dirty { WARN } else { ACCENT },
+        )),
         chunks[1],
     );
 
@@ -1061,7 +1128,7 @@ fn draw_config(frame: &mut Frame<'_>, app: &App, area: Rect) {
                 Span::styled(&editor.message, Style::default().fg(TEXT)),
             ]),
             Line::styled(
-                "Rows update cephlens.toml and restart live ssh streams after apply.",
+                "Enter/e edits or toggles; a adds host; d deletes host rows; values apply immediately.",
                 Style::default().fg(MUTED),
             ),
         ]
@@ -1072,6 +1139,18 @@ fn draw_config(frame: &mut Frame<'_>, app: &App, area: Rect) {
             .block(panel(" apply ")),
         chunks[2],
     );
+}
+
+fn bool_label(value: bool) -> &'static str {
+    if value { "true" } else { "false" }
+}
+
+fn optional_config_value(value: &str, width: usize) -> String {
+    if value.trim().is_empty() {
+        "-".to_owned()
+    } else {
+        short(value.trim(), width)
+    }
 }
 
 fn config_row(

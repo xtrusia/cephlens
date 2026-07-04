@@ -183,6 +183,13 @@ struct ConfigDraft {
     admin_host: String,
     hosts: Vec<String>,
     refresh_secs: u64,
+    trace_auto_start: bool,
+    trace_window_secs: u64,
+    trace_latency_ms: u64,
+    trace_ttl_secs: u64,
+    osdtrace_url: String,
+    osdtrace_sha256: String,
+    osdtrace_allow_unverified: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -205,6 +212,11 @@ struct EditorInput {
 enum EditorAction {
     SetAdminHost,
     SetRefreshSecs,
+    SetTraceWindowSecs,
+    SetTraceLatencyMs,
+    SetTraceTtlSecs,
+    SetOsdtraceUrl,
+    SetOsdtraceSha256,
     AddHost,
     EditHost { index: usize },
 }
@@ -213,6 +225,13 @@ enum EditorAction {
 enum ConfigSelection {
     AdminHost,
     RefreshSecs,
+    TraceAutoStart,
+    TraceWindowSecs,
+    TraceLatencyMs,
+    TraceTtlSecs,
+    OsdtraceUrl,
+    OsdtraceSha256,
+    OsdtraceAllowUnverified,
     Host(usize),
 }
 
@@ -423,34 +442,19 @@ fn save_profile_config(path: &Path, draft: &ConfigDraft) -> Result<()> {
     if config.default_profile.is_none() {
         config.default_profile = Some(draft.profile.clone());
     }
-    let existing_profile = config.profiles.get(&draft.profile).cloned();
     config.profiles.insert(
         draft.profile.clone(),
         ClusterProfile {
             admin_host: draft.admin_host.clone(),
             hosts: draft.hosts.clone(),
             refresh_secs: Some(draft.refresh_secs.max(1)),
-            trace_auto_start: existing_profile
-                .as_ref()
-                .and_then(|profile| profile.trace_auto_start),
-            trace_window_secs: existing_profile
-                .as_ref()
-                .and_then(|profile| profile.trace_window_secs),
-            trace_latency_ms: existing_profile
-                .as_ref()
-                .and_then(|profile| profile.trace_latency_ms),
-            trace_ttl_secs: existing_profile
-                .as_ref()
-                .and_then(|profile| profile.trace_ttl_secs),
-            osdtrace_url: existing_profile
-                .as_ref()
-                .and_then(|profile| profile.osdtrace_url.clone()),
-            osdtrace_sha256: existing_profile
-                .as_ref()
-                .and_then(|profile| profile.osdtrace_sha256.clone()),
-            osdtrace_allow_unverified: existing_profile
-                .as_ref()
-                .and_then(|profile| profile.osdtrace_allow_unverified),
+            trace_auto_start: Some(draft.trace_auto_start),
+            trace_window_secs: Some(draft.trace_window_secs.max(1)),
+            trace_latency_ms: Some(draft.trace_latency_ms),
+            trace_ttl_secs: Some(draft.trace_ttl_secs.max(1)),
+            osdtrace_url: draft_optional(&draft.osdtrace_url),
+            osdtrace_sha256: draft_optional(&draft.osdtrace_sha256),
+            osdtrace_allow_unverified: Some(draft.osdtrace_allow_unverified),
         },
     );
     if let Some(parent) = path
@@ -478,7 +482,25 @@ fn validate_config_draft(draft: &ConfigDraft) -> Result<()> {
     if draft.refresh_secs == 0 {
         return Err(anyhow!("refresh interval must be at least 1 second"));
     }
+    if draft.trace_window_secs == 0 {
+        return Err(anyhow!("trace window must be at least 1 second"));
+    }
+    if draft.trace_ttl_secs == 0 {
+        return Err(anyhow!("trace runner ttl must be at least 1 second"));
+    }
+    if let Some(sha256) = draft_optional(&draft.osdtrace_sha256) {
+        validate_sha256(&sha256)?;
+    }
     Ok(())
+}
+
+fn draft_optional(value: &str) -> Option<String> {
+    let value = value.trim();
+    if value.is_empty() {
+        None
+    } else {
+        Some(value.to_owned())
+    }
 }
 
 fn run_live_tui(config_path: PathBuf, cfg: ResolvedConfig) -> Result<()> {
@@ -1079,6 +1101,52 @@ fn start_edit_selected_config(app: &mut App) {
                 app.config_editor.draft.refresh_secs.to_string(),
             );
         }
+        ConfigSelection::TraceAutoStart => {
+            app.config_editor.draft.trace_auto_start = !app.config_editor.draft.trace_auto_start;
+            app.config_editor.dirty = true;
+            persist_and_apply_config(app);
+        }
+        ConfigSelection::TraceWindowSecs => {
+            app.config_editor.start_input(
+                EditorAction::SetTraceWindowSecs,
+                "trace window secs".to_owned(),
+                app.config_editor.draft.trace_window_secs.to_string(),
+            );
+        }
+        ConfigSelection::TraceLatencyMs => {
+            app.config_editor.start_input(
+                EditorAction::SetTraceLatencyMs,
+                "trace latency ms".to_owned(),
+                app.config_editor.draft.trace_latency_ms.to_string(),
+            );
+        }
+        ConfigSelection::TraceTtlSecs => {
+            app.config_editor.start_input(
+                EditorAction::SetTraceTtlSecs,
+                "trace ttl secs".to_owned(),
+                app.config_editor.draft.trace_ttl_secs.to_string(),
+            );
+        }
+        ConfigSelection::OsdtraceUrl => {
+            app.config_editor.start_input(
+                EditorAction::SetOsdtraceUrl,
+                "osdtrace url".to_owned(),
+                app.config_editor.draft.osdtrace_url.clone(),
+            );
+        }
+        ConfigSelection::OsdtraceSha256 => {
+            app.config_editor.start_input(
+                EditorAction::SetOsdtraceSha256,
+                "osdtrace sha256".to_owned(),
+                app.config_editor.draft.osdtrace_sha256.clone(),
+            );
+        }
+        ConfigSelection::OsdtraceAllowUnverified => {
+            app.config_editor.draft.osdtrace_allow_unverified =
+                !app.config_editor.draft.osdtrace_allow_unverified;
+            app.config_editor.dirty = true;
+            persist_and_apply_config(app);
+        }
         ConfigSelection::Host(index) => {
             let Some(value) = app.config_editor.draft.hosts.get(index).cloned() else {
                 app.config_editor.message = "no host selected".to_owned();
@@ -1122,6 +1190,35 @@ fn apply_editor_input(editor: &mut ConfigEditor, input: &EditorInput) -> Result<
                 .max(1);
             editor.draft.refresh_secs = refresh_secs;
         }
+        EditorAction::SetTraceWindowSecs => {
+            let trace_window_secs = value
+                .parse::<u64>()
+                .with_context(|| format!("invalid trace window '{value}'"))?
+                .max(1);
+            editor.draft.trace_window_secs = trace_window_secs;
+        }
+        EditorAction::SetTraceLatencyMs => {
+            let trace_latency_ms = value
+                .parse::<u64>()
+                .with_context(|| format!("invalid trace latency '{value}'"))?;
+            editor.draft.trace_latency_ms = trace_latency_ms;
+        }
+        EditorAction::SetTraceTtlSecs => {
+            let trace_ttl_secs = value
+                .parse::<u64>()
+                .with_context(|| format!("invalid trace ttl '{value}'"))?
+                .max(1);
+            editor.draft.trace_ttl_secs = trace_ttl_secs;
+        }
+        EditorAction::SetOsdtraceUrl => {
+            editor.draft.osdtrace_url = value.to_owned();
+        }
+        EditorAction::SetOsdtraceSha256 => {
+            if !value.is_empty() {
+                validate_sha256(value)?;
+            }
+            editor.draft.osdtrace_sha256 = value.to_owned();
+        }
         EditorAction::AddHost => {
             if value.is_empty() {
                 return Err(anyhow!("host is empty"));
@@ -1130,7 +1227,7 @@ fn apply_editor_input(editor: &mut ConfigEditor, input: &EditorInput) -> Result<
                 return Err(anyhow!("host '{value}' already exists"));
             }
             editor.draft.hosts.push(value.to_owned());
-            editor.selected = 1 + editor.draft.hosts.len();
+            editor.selected = ConfigDraft::FIXED_ROWS + editor.draft.hosts.len() - 1;
         }
         EditorAction::EditHost { index } => {
             if value.is_empty() {
@@ -1208,6 +1305,15 @@ fn persist_and_apply_config(app: &mut App) {
         app.admin_host = draft.admin_host.clone();
         app.hosts = draft.hosts.clone();
         app.refresh = Duration::from_secs(draft.refresh_secs.max(1));
+        app.trace_auto_start = draft.trace_auto_start;
+        app.trace_window_secs = draft.trace_window_secs.max(1);
+        app.trace_latency_ms = draft.trace_latency_ms;
+        app.trace_ttl_secs = draft.trace_ttl_secs.max(1);
+        app.trace_install = TraceInstallConfig {
+            url: draft_optional(&draft.osdtrace_url),
+            sha256: draft_optional(&draft.osdtrace_sha256),
+            allow_unverified: draft.osdtrace_allow_unverified,
+        };
         app.stream_stop = Arc::new(AtomicBool::new(false));
         app.trace_stop = Arc::new(AtomicBool::new(false));
         app.trace_following = false;
@@ -1872,12 +1978,21 @@ fn record_trace_event(app: &mut App, event: &TraceEvent) {
 }
 
 impl ConfigDraft {
+    const FIXED_ROWS: usize = 9;
+
     fn from_resolved(cfg: &ResolvedConfig) -> Self {
         Self {
             profile: cfg.profile.clone(),
             admin_host: cfg.admin_host.clone(),
             hosts: cfg.hosts.clone(),
             refresh_secs: cfg.refresh_secs.max(1),
+            trace_auto_start: cfg.trace_auto_start,
+            trace_window_secs: cfg.trace_window_secs.max(1),
+            trace_latency_ms: cfg.trace_latency_ms,
+            trace_ttl_secs: cfg.trace_ttl_secs.max(1),
+            osdtrace_url: cfg.trace_install.url.clone().unwrap_or_default(),
+            osdtrace_sha256: cfg.trace_install.sha256.clone().unwrap_or_default(),
+            osdtrace_allow_unverified: cfg.trace_install.allow_unverified,
         }
     }
 
@@ -1887,6 +2002,13 @@ impl ConfigDraft {
             admin_host: app.admin_host.clone(),
             hosts: app.hosts.clone(),
             refresh_secs: app.refresh.as_secs().max(1),
+            trace_auto_start: app.trace_auto_start,
+            trace_window_secs: app.trace_window_secs.max(1),
+            trace_latency_ms: app.trace_latency_ms,
+            trace_ttl_secs: app.trace_ttl_secs.max(1),
+            osdtrace_url: app.trace_install.url.clone().unwrap_or_default(),
+            osdtrace_sha256: app.trace_install.sha256.clone().unwrap_or_default(),
+            osdtrace_allow_unverified: app.trace_install.allow_unverified,
         }
     }
 }
@@ -1903,14 +2025,21 @@ impl ConfigEditor {
     }
 
     fn selection_count(&self) -> usize {
-        2 + self.draft.hosts.len()
+        ConfigDraft::FIXED_ROWS + self.draft.hosts.len()
     }
 
     fn selection(&self) -> ConfigSelection {
         match self.selected {
             0 => ConfigSelection::AdminHost,
             1 => ConfigSelection::RefreshSecs,
-            index => ConfigSelection::Host(index.saturating_sub(2)),
+            2 => ConfigSelection::TraceAutoStart,
+            3 => ConfigSelection::TraceWindowSecs,
+            4 => ConfigSelection::TraceLatencyMs,
+            5 => ConfigSelection::TraceTtlSecs,
+            6 => ConfigSelection::OsdtraceUrl,
+            7 => ConfigSelection::OsdtraceSha256,
+            8 => ConfigSelection::OsdtraceAllowUnverified,
+            index => ConfigSelection::Host(index.saturating_sub(ConfigDraft::FIXED_ROWS)),
         }
     }
 
