@@ -1,0 +1,22 @@
+[package]
+name = "cephlens"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+authors = ["cephlens contributors"]
+description = "A lab-first Ceph investigation TUI with SSH-based status and osdtrace views"
+readme = "README.md"
+license = "MIT"
+keywords = ["ceph", "tui", "ebpf", "observability", "storage"]
+categories = ["command-line-utilities", "development-tools::profiling"]
+publish = false
+
+[dependencies]
+anyhow = "1.0"
+chrono = { version = "0.4", features = ["serde"] }
+clap = { version = "4.5", features = ["derive"] }
+crossterm = "0.29"
+ratatui = "0.30"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+toml = "0.9"
