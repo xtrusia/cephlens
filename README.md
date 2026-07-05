@@ -1,6 +1,10 @@
 # cephlens
 
-Prototype Ceph investigation TUI.
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+![Rust](https://img.shields.io/badge/rust-1.85%2B-orange.svg)
+
+An SSH-driven Ceph investigation TUI with live cluster status, per-node
+readiness, and osdtrace eBPF latency views.
 
 cephlens runs on Windows, Linux, or macOS and talks to Ceph nodes over
 persistent SSH streams. It is currently a lab-first prototype, not a packaged
@@ -9,6 +13,26 @@ production monitoring agent.
 Trace collection uses temporary remote shell runners that start `osdtrace`,
 stream its output back to the TUI, and remove themselves when tracing stops or
 cephlens exits.
+
+## Features
+
+- Live cluster health, quorum, OSD counts, and IO throughput over a single SSH stream.
+- Per-node readiness: connection state, OSD ids, CPU and memory percent, and microceph version.
+- osdtrace eBPF latency tracing with per-OSD and per-PG breakdown of queue, BlueStore, and KV-commit latency.
+- Agentless: no permanent daemon on the nodes; runner scripts remove themselves on stop, quit, or TTL expiry.
+- Edit hosts and trace settings live in the TUI; changes apply to open SSH streams immediately.
+
+## Requirements
+
+Controller (where the TUI runs):
+
+- Rust 1.85+ (edition 2024) to build.
+- An OpenSSH client on `PATH`, with every host reachable over non-interactive SSH (key-based, no password prompt).
+
+Ceph nodes:
+
+- `ceph` and `rados` CLIs, plus passwordless `sudo -n` for the observed commands (see Access and sudo).
+- For tracing, the `osdtrace` binary from [cephtrace](https://github.com/taodd/cephtrace). osdtrace is eBPF-based and needs a Linux 5.8+ kernel; cephlens installs a prebuilt binary automatically only on Debian/Ubuntu x86_64, otherwise install it yourself.
 
 ## Status
 
@@ -194,3 +218,12 @@ Live TUI mode keeps one SSH stream open for cluster status and one stream per
 host for node readiness. Each stream emits data once per second by default and
 the node table shows connection state (`live`, `dial`, `retry`, `error`), OSD
 ids, CPU percentage, and memory percentage.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
+
+cephlens drives the `osdtrace` binary from the
+[cephtrace](https://github.com/taodd/cephtrace) project, which is licensed
+separately under GPL-2.0. cephlens runs it as an external command over SSH and
+does not link against it.
