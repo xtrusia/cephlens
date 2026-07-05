@@ -14,7 +14,7 @@ steps to reproduce. Expect an initial response within about a week.
 
 ## Security model
 
-cephlens is agentless and stores no credentials. It runs `ssh -o BatchMode=yes`
+cephlens installs no daemon and stores no credentials. It runs `ssh -o BatchMode=yes`
 plus `sudo -n` against hosts you configure, and it starts eBPF tracers
 (osdtrace / kfstrace / radostrace) that run as root on those hosts. It can only
 reach hosts your SSH key and sudo rights already allow. The surfaces worth

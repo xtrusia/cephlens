@@ -20,7 +20,7 @@ cephlens exits.
 - Live cluster health, quorum, OSD counts, and IO throughput over a single SSH stream.
 - Per-node readiness: connection state, OSD ids, CPU and memory percent, and microceph version.
 - osdtrace eBPF latency tracing with per-OSD and per-PG breakdown of queue, BlueStore, and KV-commit latency.
-- Agentless: no permanent daemon on the nodes; runner scripts remove themselves on stop, quit, or TTL expiry.
+- No standing agent: no permanent daemon on the nodes; runner scripts remove themselves on stop, quit, or TTL expiry. (The cephtrace tracer binaries you deploy do persist under `~/.cephlens/bin/`.)
 - Edit hosts and trace settings live in the TUI; changes apply to open SSH streams immediately.
 
 ## Requirements

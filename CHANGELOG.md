@@ -10,7 +10,7 @@ Notable changes are documented here. The format follows
 
 Initial release.
 
-- Agentless Ceph investigation TUI over SSH: live cluster, OSD, and host status.
+- SSH-driven Ceph investigation TUI: live cluster, OSD, and host status.
 - Three eBPF trace sources driven through cephtrace: osdtrace (OSD server side),
   kfstrace (CephFS MDS client), and radostrace (RADOS client).
 - Trace controls with view switching and start/stop confirmation, per-source and
