@@ -93,7 +93,6 @@ pub(crate) enum StreamState {
 pub(crate) enum Mode {
     Live,
     Config,
-    Trace,
     Replay {
         index: usize,
         snapshots: Vec<Snapshot>,
@@ -106,7 +105,6 @@ pub(crate) enum PanelFocus {
     Osds,
     Trace,
     Logs,
-    Targets,
 }
 
 pub(crate) struct App {
@@ -120,20 +118,19 @@ pub(crate) struct App {
     pub(crate) snapshot: Option<Snapshot>,
     pub(crate) confirm_quit: bool,
     pub(crate) shutting_down: bool,
+    pub(crate) trace_probing: bool,
     pub(crate) tx: Sender<WorkerMsg>,
     pub(crate) rx: Receiver<WorkerMsg>,
     pub(crate) logs: Vec<String>,
     pub(crate) event_log_height: u16,
     pub(crate) terminal_height: u16,
     pub(crate) overview_offset: i16,
-    pub(crate) insights_offset: i16,
     pub(crate) show_help: bool,
     pub(crate) focused_panel: PanelFocus,
     pub(crate) nodes_scroll: usize,
     pub(crate) osds_scroll: usize,
     pub(crate) trace_scroll: usize,
     pub(crate) logs_scroll: usize,
-    pub(crate) targets_scroll: usize,
     pub(crate) node_summaries: HashMap<String, NodeSummary>,
     pub(crate) stream_statuses: HashMap<String, StreamStatus>,
     pub(crate) trace_targets: Vec<TraceTarget>,
@@ -212,7 +209,7 @@ pub(crate) fn shutdown_streams(app: &App, wait_for_cleanup: bool) -> Vec<Cleanup
 }
 
 pub(crate) fn live_streams_active(app: &App) -> bool {
-    matches!(app.mode, Mode::Live | Mode::Config | Mode::Trace)
+    matches!(app.mode, Mode::Live | Mode::Config)
 }
 
 fn spawn_persistent_ssh_stream(
@@ -335,6 +332,30 @@ fn sleep_with_stop(stop: &AtomicBool, duration: Duration) {
     }
 }
 
+fn log_trace_targets(app: &mut App, verb: &str, targets: &[TraceTarget]) {
+    let ready = targets.iter().filter(|target| target.installed).count();
+    app.log(format!(
+        "osdtrace {verb}: {ready}/{} hosts ready",
+        targets.len()
+    ));
+    for target in targets {
+        let state = if target.installed && target.error.is_none() {
+            "ready"
+        } else if target.installed {
+            "warn"
+        } else {
+            "missing"
+        };
+        let detail = target.error.clone().unwrap_or_else(|| {
+            format!(
+                "osd {} traceable {} {}",
+                target.osds, target.traceable, target.version
+            )
+        });
+        app.log(format!("  {} {}: {}", target.host, state, detail));
+    }
+}
+
 pub(crate) fn drain_worker_messages(app: &mut App) {
     while let Ok(msg) = app.rx.try_recv() {
         match msg {
@@ -345,21 +366,13 @@ pub(crate) fn drain_worker_messages(app: &mut App) {
             }
             WorkerMsg::Stream(msg) => handle_stream_msg(app, msg),
             WorkerMsg::TraceProbe(targets) => {
-                app.trace_active = 0;
-                let ready = targets.iter().filter(|target| target.installed).count();
-                app.log(format!(
-                    "osdtrace probe complete: {ready}/{} ready",
-                    targets.len()
-                ));
+                app.trace_probing = false;
+                log_trace_targets(app, "probe", &targets);
                 app.trace_targets = targets;
             }
             WorkerMsg::TraceInstall(targets) => {
                 app.trace_active = 0;
-                let ready = targets.iter().filter(|target| target.installed).count();
-                app.log(format!(
-                    "osdtrace install complete: {ready}/{} ready",
-                    targets.len()
-                ));
+                log_trace_targets(app, "install", &targets);
                 app.trace_targets = targets;
             }
             WorkerMsg::TraceLine { host, line } => {
@@ -555,11 +568,10 @@ pub(crate) fn spawn_probe(app: &mut App) {
 }
 
 pub(crate) fn spawn_trace_probe(app: &mut App) {
-    if app.trace_active > 0 {
+    if app.trace_probing {
         return;
     }
-    app.trace_following = false;
-    app.trace_active = app.hosts.len().max(1);
+    app.trace_probing = true;
     app.log("osdtrace probe requested");
     let tx = app.tx.clone();
     let hosts = app.hosts.clone();

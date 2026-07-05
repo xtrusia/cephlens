@@ -247,20 +247,19 @@ fn run_live_tui(config_path: PathBuf, cfg: ResolvedConfig) -> Result<()> {
         snapshot: None,
         confirm_quit: false,
         shutting_down: false,
+        trace_probing: false,
         tx,
         rx,
         logs: Vec::new(),
         event_log_height: EVENT_LOG_DEFAULT_HEIGHT,
         terminal_height: 24,
         overview_offset: 0,
-        insights_offset: 0,
         show_help: false,
         focused_panel: PanelFocus::Osds,
         nodes_scroll: 0,
         osds_scroll: 0,
         trace_scroll: 0,
         logs_scroll: 0,
-        targets_scroll: 0,
         node_summaries: HashMap::new(),
         stream_statuses: HashMap::new(),
         trace_targets: Vec::new(),
@@ -281,6 +280,7 @@ fn run_live_tui(config_path: PathBuf, cfg: ResolvedConfig) -> Result<()> {
     };
     app.log("cephlens live session started");
     start_live_streams(&mut app);
+    spawn_trace_probe(&mut app);
     if app.trace_auto_start {
         let latency_ms = app.trace_latency_ms;
         spawn_trace_run(&mut app, latency_ms);
@@ -324,20 +324,19 @@ fn run_replay_tui(file: PathBuf) -> Result<()> {
         snapshot,
         confirm_quit: false,
         shutting_down: false,
+        trace_probing: false,
         tx,
         rx,
         logs: vec![format!("replay loaded from {}", file.display())],
         event_log_height: EVENT_LOG_DEFAULT_HEIGHT,
         terminal_height: 24,
         overview_offset: 0,
-        insights_offset: 0,
         show_help: false,
         focused_panel: PanelFocus::Osds,
         nodes_scroll: 0,
         osds_scroll: 0,
         trace_scroll: 0,
         logs_scroll: 0,
-        targets_scroll: 0,
         node_summaries: HashMap::new(),
         stream_statuses: HashMap::new(),
         trace_targets: Vec::new(),
@@ -444,7 +443,7 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Result<bool> {
         return Ok(false);
     }
 
-    if matches!(app.mode, Mode::Live | Mode::Trace) && handle_panel_key(app, key) {
+    if matches!(app.mode, Mode::Live) && handle_panel_key(app, key) {
         return Ok(false);
     }
 
@@ -456,6 +455,7 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Result<bool> {
             }
             KeyCode::Char('p') => {
                 spawn_probe(app);
+                spawn_trace_probe(app);
                 Ok(false)
             }
             KeyCode::Char('c') => {
@@ -481,17 +481,9 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Result<bool> {
                 app.log("trace graph cleared");
                 Ok(false)
             }
-            KeyCode::Char('v') => {
-                app.mode = Mode::Trace;
-                if app.trace_targets.is_empty() {
-                    spawn_trace_probe(app);
-                }
-                Ok(false)
-            }
             _ => Ok(false),
         },
         Mode::Config => handle_config_key(app, key),
-        Mode::Trace => handle_trace_key(app, key),
         Mode::Replay { .. } => match key.code {
             KeyCode::Char('q') | KeyCode::Esc => {
                 request_quit(app);
@@ -517,12 +509,12 @@ fn handle_global_key(app: &mut App, key: KeyEvent) -> bool {
             true
         }
         KeyCode::Char(']') | KeyCode::Char('+') | KeyCode::Char('=')
-            if matches!(app.mode, Mode::Live | Mode::Trace) =>
+            if matches!(app.mode, Mode::Live) =>
         {
             resize_focused_panel(app, 1);
             true
         }
-        KeyCode::Char('[') | KeyCode::Char('-') if matches!(app.mode, Mode::Live | Mode::Trace) => {
+        KeyCode::Char('[') | KeyCode::Char('-') if matches!(app.mode, Mode::Live) => {
             resize_focused_panel(app, -1);
             true
         }
@@ -533,16 +525,12 @@ fn handle_global_key(app: &mut App, key: KeyEvent) -> bool {
 fn resize_focused_panel(app: &mut App, delta: i16) {
     match app.focused_panel {
         PanelFocus::Logs => adjust_event_log_height(app, delta),
-        PanelFocus::Osds | PanelFocus::Nodes if matches!(app.mode, Mode::Live) => {
+        PanelFocus::Osds | PanelFocus::Nodes => {
             app.overview_offset = (app.overview_offset + delta).clamp(-6, 12);
         }
-        PanelFocus::Trace if matches!(app.mode, Mode::Live) => {
+        PanelFocus::Trace => {
             app.overview_offset = (app.overview_offset - delta).clamp(-6, 12);
         }
-        PanelFocus::Trace | PanelFocus::Targets if matches!(app.mode, Mode::Trace) => {
-            app.insights_offset = (app.insights_offset + delta).clamp(-3, 3);
-        }
-        _ => {}
     }
 }
 
@@ -593,7 +581,7 @@ fn handle_panel_key(app: &mut App, key: KeyEvent) -> bool {
 }
 
 fn focus_next_panel(app: &mut App, delta: i32) {
-    let panels = focusable_panels(app);
+    let panels = focusable_panels();
     let current = panels
         .iter()
         .position(|panel| *panel == app.focused_panel)
@@ -603,23 +591,13 @@ fn focus_next_panel(app: &mut App, delta: i32) {
     app.focused_panel = panels[next];
 }
 
-fn focusable_panels(app: &App) -> &'static [PanelFocus] {
-    if matches!(app.mode, Mode::Trace) {
-        &[
-            PanelFocus::Targets,
-            PanelFocus::Trace,
-            PanelFocus::Logs,
-            PanelFocus::Osds,
-            PanelFocus::Nodes,
-        ]
-    } else {
-        &[
-            PanelFocus::Osds,
-            PanelFocus::Trace,
-            PanelFocus::Logs,
-            PanelFocus::Nodes,
-        ]
-    }
+fn focusable_panels() -> &'static [PanelFocus] {
+    &[
+        PanelFocus::Osds,
+        PanelFocus::Trace,
+        PanelFocus::Logs,
+        PanelFocus::Nodes,
+    ]
 }
 
 fn scroll_focused_panel(app: &mut App, delta: isize) {
@@ -642,7 +620,6 @@ fn focused_scroll_mut(app: &mut App) -> &mut usize {
         PanelFocus::Osds => &mut app.osds_scroll,
         PanelFocus::Trace => &mut app.trace_scroll,
         PanelFocus::Logs => &mut app.logs_scroll,
-        PanelFocus::Targets => &mut app.targets_scroll,
     }
 }
 
@@ -676,42 +653,5 @@ fn handle_quit_confirm(app: &mut App, key: KeyEvent) -> bool {
             false
         }
         _ => false,
-    }
-}
-
-fn handle_trace_key(app: &mut App, key: KeyEvent) -> Result<bool> {
-    match key.code {
-        KeyCode::Char('q') => {
-            request_quit(app);
-            Ok(false)
-        }
-        KeyCode::Esc | KeyCode::Char('c') => {
-            app.mode = Mode::Live;
-            Ok(false)
-        }
-        KeyCode::Char('p') => {
-            spawn_trace_probe(app);
-            Ok(false)
-        }
-        KeyCode::Char('i') => {
-            spawn_trace_install(app);
-            Ok(false)
-        }
-        KeyCode::Char('r') => {
-            let latency_ms = app.trace_latency_ms.max(1);
-            toggle_trace(app, latency_ms);
-            Ok(false)
-        }
-        KeyCode::Char('0') => {
-            spawn_trace_run(app, 0);
-            Ok(false)
-        }
-        KeyCode::Char('x') => {
-            app.trace_events.clear();
-            app.trace_series.clear();
-            app.log("trace graph cleared");
-            Ok(false)
-        }
-        _ => Ok(false),
     }
 }

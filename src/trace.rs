@@ -278,24 +278,6 @@ fn apply_trace_platform(target: &mut TraceTarget, fields: &str) {
     }
 }
 
-pub(crate) fn trace_platform_label(target: &TraceTarget) -> String {
-    let os = match target.os_id.as_str() {
-        "" => "unk",
-        "ubuntu" => "ubu",
-        "debian" => "deb",
-        "almalinux" => "alma",
-        "opensuse-leap" | "opensuse-tumbleweed" => "suse",
-        other => other,
-    };
-    let arch = match target.arch.as_str() {
-        "" => "unk",
-        "x86_64" | "amd64" => "x64",
-        "aarch64" => "arm64",
-        other => other,
-    };
-    format!("{os}/{arch}")
-}
-
 fn summarize_traceable(values: &[String]) -> String {
     if values.is_empty() {
         return "-".to_owned();

@@ -14,10 +14,7 @@ use crate::app::{
 };
 use crate::editor::ConfigDraft;
 use crate::model::NodeSummary;
-use crate::trace::{
-    TraceGraphRow, dominant_component, trace_graph_rows as build_trace_graph_rows,
-    trace_platform_label,
-};
+use crate::trace::{TraceGraphRow, dominant_component, trace_graph_rows as build_trace_graph_rows};
 use crate::util::{clamp_bottom_scroll, clamp_top_scroll, short};
 
 const ACCENT: Color = Color::Rgb(93, 228, 199);
@@ -143,7 +140,6 @@ fn draw_header(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let mode = match &app.mode {
         Mode::Live => "LIVE",
         Mode::Config => "CONFIG",
-        Mode::Trace => "TRACE",
         Mode::Replay { index, snapshots } => {
             return frame.render_widget(
                 Paragraph::new(Line::from(vec![
@@ -242,10 +238,6 @@ fn draw_header(frame: &mut Frame<'_>, app: &App, area: Rect) {
 fn draw_body(frame: &mut Frame<'_>, app: &App, area: Rect) {
     if matches!(app.mode, Mode::Config) {
         draw_config(frame, app, area);
-        return;
-    }
-    if matches!(app.mode, Mode::Trace) {
-        draw_trace(frame, app, area);
         return;
     }
 
@@ -368,95 +360,6 @@ fn draw_overview(frame: &mut Frame<'_>, app: &App, area: Rect) {
     }
 }
 
-fn draw_trace(frame: &mut Frame<'_>, app: &App, area: Rect) {
-    let show_insights = area.height >= 16;
-    let body_area = if show_insights {
-        let insight_height = (5i16 - app.insights_offset).clamp(2, 8) as u16;
-        let outer = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Length(insight_height), Constraint::Min(6)])
-            .split(area);
-        draw_insights(frame, app, outer[0]);
-        outer[1]
-    } else {
-        area
-    };
-
-    let chunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(45), Constraint::Percentage(55)])
-        .split(body_area);
-
-    let target_rows = app
-        .trace_targets
-        .iter()
-        .map(|target| {
-            let state = if target.installed && target.error.is_none() {
-                "ready"
-            } else if target.installed {
-                "warn"
-            } else {
-                "missing"
-            };
-            let color = if target.installed && target.error.is_none() {
-                OK
-            } else if target.installed {
-                WARN
-            } else {
-                BAD
-            };
-            let detail = target.error.clone().unwrap_or_else(|| {
-                format!(
-                    "osd {} trace {} {}",
-                    target.osds, target.traceable, target.version
-                )
-            });
-            Row::new(vec![
-                Cell::from(short(&target.host, 9)).style(Style::default().fg(ACCENT).bold()),
-                Cell::from(state).style(Style::default().fg(color).bold()),
-                Cell::from(short(&trace_platform_label(target), 13))
-                    .style(Style::default().fg(BLUE)),
-                Cell::from(short(&detail, 22)).style(Style::default().fg(MUTED)),
-            ])
-        })
-        .collect::<Vec<_>>();
-    let target_visible = table_visible_rows(chunks[0]);
-    let target_scroll = clamp_top_scroll(app.targets_scroll, target_rows.len(), target_visible);
-    let target_total = target_rows.len();
-
-    frame.render_widget(
-        Table::new(
-            target_rows
-                .into_iter()
-                .skip(target_scroll)
-                .take(target_visible),
-            [
-                Constraint::Length(9),
-                Constraint::Length(6),
-                Constraint::Length(13),
-                Constraint::Min(10),
-            ],
-        )
-        .header(
-            Row::new(["Host", "Tool", "Platform", "Detail"])
-                .style(Style::default().fg(MUTED).bold()),
-        )
-        .block(scroll_panel(
-            app,
-            PanelFocus::Targets,
-            "osdtrace targets",
-            target_total,
-            target_visible,
-            target_scroll,
-            false,
-            resize_hint(app, PanelFocus::Targets, chunks[0]),
-        )),
-        chunks[0],
-    );
-
-    draw_trace_events(frame, app, chunks[1]);
-}
-
 fn draw_footer(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let mut spans = vec![Span::raw(" ")];
     spans.extend(command_spans(&footer_commands(app)));
@@ -495,14 +398,6 @@ fn footer_commands(app: &App) -> Vec<(&'static str, &'static str)> {
             ("?", "more"),
             ("q", "quit"),
         ],
-        Mode::Trace => vec![
-            ("r", "trace"),
-            ("0", "all"),
-            ("Tab", "panel"),
-            ("?", "more"),
-            ("Esc", "back"),
-            ("q", "quit"),
-        ],
         Mode::Config if app.config_editor.input.is_some() => {
             vec![("Enter", "save"), ("Ctrl+U", "clear"), ("Esc", "cancel")]
         }
@@ -524,9 +419,8 @@ fn help_commands(app: &App) -> Vec<(&'static str, &'static str)> {
     match app.mode {
         Mode::Live => vec![
             ("c", "edit config"),
-            ("p", "probe readiness"),
+            ("p", "probe node + osdtrace readiness"),
             ("i", "install osdtrace"),
-            ("v", "osdtrace targets view"),
             ("t", "toggle trace (>=1ms)"),
             ("0", "trace all observed ops"),
             ("x", "clear captured trace"),
@@ -536,18 +430,6 @@ fn help_commands(app: &App) -> Vec<(&'static str, &'static str)> {
             ("Home/End", "jump to start / end"),
             ("-/+", "resize focused panel"),
             ("q / Esc", "quit"),
-        ],
-        Mode::Trace => vec![
-            ("p", "probe readiness"),
-            ("i", "install osdtrace"),
-            ("r", "toggle trace (>=1ms)"),
-            ("0", "trace all observed ops"),
-            ("x", "clear captured trace"),
-            ("Tab / Shift+Tab", "focus next / prev panel"),
-            ("Up/Dn j/k", "scroll focused panel"),
-            ("-/+", "resize focused panel"),
-            ("Esc / c", "back to dashboard"),
-            ("q", "quit"),
         ],
         Mode::Config => vec![
             ("Up/Dn", "select field or host row"),
@@ -588,13 +470,30 @@ fn draw_help_overlay(frame: &mut Frame<'_>, app: &App, area: Rect) {
         ])
     }));
     lines.push(Line::raw(""));
+    if matches!(app.mode, Mode::Live) {
+        lines.push(Line::styled("legend", Style::default().fg(ACCENT).bold()));
+        lines.push(Line::from(vec![
+            Span::styled("T   ", Style::default().fg(WARN).bold()),
+            Span::styled(
+                "● ready  ◐ warn  ○ missing  · unprobed",
+                Style::default().fg(TEXT),
+            ),
+        ]));
+        lines.push(Line::raw(""));
+    }
     lines.push(Line::styled("any key closes", Style::default().fg(MUTED)));
 
+    let legend_width = if matches!(app.mode, Mode::Live) {
+        44
+    } else {
+        0
+    };
     let inner_width = commands
         .iter()
         .map(|(_, label)| key_width + 2 + label.len())
         .max()
         .unwrap_or(20)
+        .max(legend_width)
         .clamp(20, 60) as u16;
     let modal = centered_rect(inner_width + 4, lines.len() as u16 + 2, area);
     frame.render_widget(Clear, modal);
@@ -1311,6 +1210,15 @@ fn draw_cluster(frame: &mut Frame<'_>, app: &App, area: Rect) {
     );
 }
 
+fn osdtrace_glyph(app: &App, host: &str) -> (&'static str, Color) {
+    match app.trace_targets.iter().find(|target| target.host == host) {
+        None => ("·", MUTED),
+        Some(target) if target.installed && target.error.is_none() => ("●", OK),
+        Some(target) if target.installed => ("◐", WARN),
+        Some(_) => ("○", BAD),
+    }
+}
+
 fn draw_nodes(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let rows = node_rows(app);
     let visible = table_visible_rows(area);
@@ -1322,13 +1230,14 @@ fn draw_nodes(frame: &mut Frame<'_>, app: &App, area: Rect) {
             [
                 Constraint::Length(9),
                 Constraint::Length(6),
+                Constraint::Length(2),
                 Constraint::Length(4),
                 Constraint::Length(5),
                 Constraint::Length(5),
             ],
         )
         .header(
-            Row::new(["Host", "State", "OSD", "CPU%", "MEM%"])
+            Row::new(["Host", "State", "T", "OSD", "CPU%", "MEM%"])
                 .style(Style::default().fg(MUTED).add_modifier(Modifier::BOLD)),
         )
         .block(scroll_panel(
@@ -1381,9 +1290,11 @@ fn node_rows(app: &App) -> Vec<Row<'static>> {
             let mem = node
                 .map(|node| percent_label(node.mem_percent))
                 .unwrap_or_else(|| "-".to_owned());
+            let (glyph, glyph_color) = osdtrace_glyph(app, host);
             Row::new(vec![
                 Cell::from(short(host, 9)).style(Style::default().fg(ACCENT).bold()),
                 Cell::from(state).style(Style::default().fg(color).bold()),
+                Cell::from(glyph).style(Style::default().fg(glyph_color).bold()),
                 Cell::from(osds),
                 Cell::from(cpu).style(Style::default().fg(metric_color(
                     node.map(|node| node.cpu_percent).unwrap_or_default(),
@@ -1562,8 +1473,7 @@ fn panel_resizable(mode: &Mode, focus: PanelFocus) -> bool {
     match focus {
         PanelFocus::Logs => true,
         PanelFocus::Nodes | PanelFocus::Osds => matches!(mode, Mode::Live),
-        PanelFocus::Trace => matches!(mode, Mode::Live | Mode::Trace),
-        PanelFocus::Targets => matches!(mode, Mode::Trace),
+        PanelFocus::Trace => matches!(mode, Mode::Live),
     }
 }
 
