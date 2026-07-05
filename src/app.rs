@@ -124,6 +124,9 @@ pub(crate) struct App {
     pub(crate) rx: Receiver<WorkerMsg>,
     pub(crate) logs: Vec<String>,
     pub(crate) event_log_height: u16,
+    pub(crate) overview_offset: i16,
+    pub(crate) insights_offset: i16,
+    pub(crate) show_help: bool,
     pub(crate) focused_panel: PanelFocus,
     pub(crate) nodes_scroll: usize,
     pub(crate) osds_scroll: usize,
@@ -670,6 +673,14 @@ pub(crate) fn stop_trace_follow(app: &mut App) {
     } else {
         app.log("trace follow stopped");
         app.trace_session = None;
+    }
+}
+
+pub(crate) fn toggle_trace(app: &mut App, latency_ms: u64) {
+    if app.trace_active > 0 || app.trace_following {
+        stop_trace_follow(app);
+    } else {
+        spawn_trace_run(app, latency_ms);
     }
 }
 

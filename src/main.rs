@@ -33,7 +33,7 @@ use app::{
     App, EVENT_LOG_DEFAULT_HEIGHT, EVENT_LOG_MAX_HEIGHT, EVENT_LOG_MIN_HEIGHT, Mode, PanelFocus,
     drain_worker_messages, replay_move, request_quit, shutdown_streams, spawn_probe,
     spawn_snapshot, spawn_trace_install, spawn_trace_probe, spawn_trace_run, start_live_streams,
-    stop_trace_follow,
+    toggle_trace,
 };
 use collect::{collect_snapshot, run_bench, run_probe};
 use config::{
@@ -252,6 +252,9 @@ fn run_live_tui(config_path: PathBuf, cfg: ResolvedConfig) -> Result<()> {
         rx,
         logs: Vec::new(),
         event_log_height: EVENT_LOG_DEFAULT_HEIGHT,
+        overview_offset: 0,
+        insights_offset: 0,
+        show_help: false,
         focused_panel: PanelFocus::Osds,
         nodes_scroll: 0,
         osds_scroll: 0,
@@ -325,6 +328,9 @@ fn run_replay_tui(file: PathBuf) -> Result<()> {
         rx,
         logs: vec![format!("replay loaded from {}", file.display())],
         event_log_height: EVENT_LOG_DEFAULT_HEIGHT,
+        overview_offset: 0,
+        insights_offset: 0,
+        show_help: false,
         focused_panel: PanelFocus::Osds,
         nodes_scroll: 0,
         osds_scroll: 0,
@@ -411,6 +417,11 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Result<bool> {
         return Ok(handle_quit_confirm(app, key));
     }
 
+    if app.show_help {
+        app.show_help = false;
+        return Ok(false);
+    }
+
     if matches!(app.mode, Mode::Config) && app.config_editor.input.is_some() {
         handle_config_input(app, key);
         return Ok(false);
@@ -444,15 +455,11 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Result<bool> {
             }
             KeyCode::Char('t') => {
                 let latency_ms = app.trace_latency_ms.max(1);
-                spawn_trace_run(app, latency_ms);
+                toggle_trace(app, latency_ms);
                 Ok(false)
             }
             KeyCode::Char('0') => {
                 spawn_trace_run(app, 0);
-                Ok(false)
-            }
-            KeyCode::Char('s') => {
-                stop_trace_follow(app);
                 Ok(false)
             }
             KeyCode::Char('i') => {
@@ -496,15 +503,37 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Result<bool> {
 
 fn handle_global_key(app: &mut App, key: KeyEvent) -> bool {
     match key.code {
-        KeyCode::Char(']') | KeyCode::Char('+') | KeyCode::Char('=') => {
-            adjust_event_log_height(app, 1);
+        KeyCode::Char('?') => {
+            app.show_help = true;
             true
         }
-        KeyCode::Char('[') | KeyCode::Char('-') => {
-            adjust_event_log_height(app, -1);
+        KeyCode::Char(']') | KeyCode::Char('+') | KeyCode::Char('=')
+            if matches!(app.mode, Mode::Live | Mode::Trace) =>
+        {
+            resize_focused_panel(app, 1);
+            true
+        }
+        KeyCode::Char('[') | KeyCode::Char('-') if matches!(app.mode, Mode::Live | Mode::Trace) => {
+            resize_focused_panel(app, -1);
             true
         }
         _ => false,
+    }
+}
+
+fn resize_focused_panel(app: &mut App, delta: i16) {
+    match app.focused_panel {
+        PanelFocus::Logs => adjust_event_log_height(app, delta),
+        PanelFocus::Osds | PanelFocus::Nodes if matches!(app.mode, Mode::Live) => {
+            app.overview_offset = (app.overview_offset + delta).clamp(-6, 12);
+        }
+        PanelFocus::Trace if matches!(app.mode, Mode::Live) => {
+            app.overview_offset = (app.overview_offset - delta).clamp(-6, 12);
+        }
+        PanelFocus::Trace | PanelFocus::Targets if matches!(app.mode, Mode::Trace) => {
+            app.insights_offset = (app.insights_offset + delta).clamp(-3, 3);
+        }
+        _ => {}
     }
 }
 
@@ -657,15 +686,11 @@ fn handle_trace_key(app: &mut App, key: KeyEvent) -> Result<bool> {
         }
         KeyCode::Char('r') => {
             let latency_ms = app.trace_latency_ms.max(1);
-            spawn_trace_run(app, latency_ms);
+            toggle_trace(app, latency_ms);
             Ok(false)
         }
         KeyCode::Char('0') => {
             spawn_trace_run(app, 0);
-            Ok(false)
-        }
-        KeyCode::Char('s') => {
-            stop_trace_follow(app);
             Ok(false)
         }
         KeyCode::Char('x') => {

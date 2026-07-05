@@ -52,12 +52,17 @@ pub(crate) fn draw(frame: &mut Frame<'_>, app: &App) {
             Constraint::Length(3),
             Constraint::Min(10),
             Constraint::Length(log_height),
+            Constraint::Length(1),
         ])
         .split(area);
 
     draw_header(frame, app, chunks[0]);
     draw_body(frame, app, chunks[1]);
     draw_logs(frame, app, chunks[2]);
+    draw_footer(frame, app, chunks[3]);
+    if app.show_help {
+        draw_help_overlay(frame, app, area);
+    }
     if app.confirm_quit {
         draw_quit_confirm(frame, app, area);
     }
@@ -66,7 +71,7 @@ pub(crate) fn draw(frame: &mut Frame<'_>, app: &App) {
 fn event_log_height_for(area: Rect, preferred: u16) -> u16 {
     let terminal_limit = area
         .height
-        .saturating_sub(9)
+        .saturating_sub(10)
         .clamp(EVENT_LOG_MIN_HEIGHT, EVENT_LOG_MAX_HEIGHT);
     preferred
         .clamp(EVENT_LOG_MIN_HEIGHT, EVENT_LOG_MAX_HEIGHT)
@@ -238,7 +243,7 @@ fn draw_dashboard(frame: &mut Frame<'_>, app: &App, area: Rect) {
     }
 
     let show_insights = area.height >= 15;
-    let top_height = if show_insights {
+    let base_top = if show_insights {
         if area.height >= 30 {
             11
         } else if area.height >= 22 {
@@ -266,34 +271,49 @@ fn draw_dashboard(frame: &mut Frame<'_>, app: &App, area: Rect) {
     };
     if show_insights {
         let insight_height = if area.height >= 22 { 5 } else { 3 };
+        let top_height = clamp_overview_height(
+            base_top,
+            app.overview_offset,
+            area.height,
+            insight_height,
+            trace_min_height,
+        );
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
                 Constraint::Length(top_height),
-                Constraint::Length(3),
                 Constraint::Length(insight_height),
                 Constraint::Min(trace_min_height),
             ])
             .split(area);
 
         draw_overview(frame, app, chunks[0]);
-        draw_command_bar(frame, app, chunks[1]);
-        draw_insights(frame, app, chunks[2]);
-        draw_trace_events(frame, app, chunks[3]);
+        draw_insights(frame, app, chunks[1]);
+        draw_trace_events(frame, app, chunks[2]);
     } else {
+        let top_height = clamp_overview_height(
+            base_top,
+            app.overview_offset,
+            area.height,
+            0,
+            trace_min_height,
+        );
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
                 Constraint::Length(top_height),
-                Constraint::Length(3),
                 Constraint::Min(trace_min_height),
             ])
             .split(area);
 
         draw_overview(frame, app, chunks[0]);
-        draw_command_bar(frame, app, chunks[1]);
-        draw_trace_events(frame, app, chunks[2]);
+        draw_trace_events(frame, app, chunks[1]);
     }
+}
+
+fn clamp_overview_height(base: u16, offset: i16, total: u16, insight: u16, trace_min: u16) -> u16 {
+    let max_top = total.saturating_sub(insight + trace_min + 1).max(5);
+    ((base as i16) + offset).clamp(5, max_top as i16) as u16
 }
 
 fn draw_overview(frame: &mut Frame<'_>, app: &App, area: Rect) {
@@ -330,28 +350,16 @@ fn draw_overview(frame: &mut Frame<'_>, app: &App, area: Rect) {
 
 fn draw_trace(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let show_insights = area.height >= 16;
-    let outer = if show_insights {
-        Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Length(3),
-                Constraint::Length(5),
-                Constraint::Min(6),
-            ])
-            .split(area)
-    } else {
-        Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Length(3), Constraint::Min(6)])
-            .split(area)
-    };
-
-    draw_command_bar(frame, app, outer[0]);
     let body_area = if show_insights {
-        draw_insights(frame, app, outer[1]);
-        outer[2]
-    } else {
+        let insight_height = (5i16 - app.insights_offset).clamp(2, 8) as u16;
+        let outer = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(insight_height), Constraint::Min(6)])
+            .split(area);
+        draw_insights(frame, app, outer[0]);
         outer[1]
+    } else {
+        area
     };
 
     let chunks = Layout::default()
@@ -421,6 +429,7 @@ fn draw_trace(frame: &mut Frame<'_>, app: &App, area: Rect) {
             target_visible,
             target_scroll,
             false,
+            resize_hint(app, PanelFocus::Targets, chunks[0]),
         )),
         chunks[0],
     );
@@ -428,103 +437,20 @@ fn draw_trace(frame: &mut Frame<'_>, app: &App, area: Rect) {
     draw_trace_events(frame, app, chunks[1]);
 }
 
-fn draw_command_bar(frame: &mut Frame<'_>, app: &App, area: Rect) {
-    let commands = command_help(app, area.width);
+fn draw_footer(frame: &mut Frame<'_>, app: &App, area: Rect) {
+    let mut spans = vec![Span::raw(" ")];
+    spans.extend(command_spans(&footer_commands(app)));
     frame.render_widget(
-        Paragraph::new(Line::from(commands))
-            .style(Style::default().fg(TEXT))
-            .block(panel(" commands ")),
+        Paragraph::new(Line::from(spans)).style(Style::default().fg(TEXT)),
         area,
     );
 }
 
-fn command_help(app: &App, width: u16) -> Vec<Span<'static>> {
-    let compact = width < 96;
-    let raw = match app.mode {
-        Mode::Live if compact => vec![
-            ("r", "ref"),
-            ("c", "cfg"),
-            ("p", "probe"),
-            ("i", "inst"),
-            ("v", "tgt"),
-            ("t", "trace"),
-            ("0", "all"),
-            ("s", "stop"),
-            ("x", "clr"),
-            ("[ ]", "log"),
-            ("Tab", "pan"),
-            ("Up/Dn", "scr"),
-            ("q", "quit"),
-        ],
-        Mode::Live => vec![
-            ("r", "refresh"),
-            ("c", "config"),
-            ("p", "probe"),
-            ("i", "install"),
-            ("v", "targets"),
-            ("t", "trace"),
-            ("0", "all"),
-            ("s", "stop"),
-            ("x", "clear"),
-            ("[ ]", "log"),
-            ("Tab", "panel"),
-            ("Up/Dn", "scroll"),
-            ("q", "quit"),
-        ],
-        Mode::Trace if compact => vec![
-            ("p", "probe"),
-            ("i", "inst"),
-            ("r", "trace"),
-            ("0", "all"),
-            ("s", "stop"),
-            ("x", "clr"),
-            ("Tab", "pan"),
-            ("Up/Dn", "scr"),
-            ("[ ]", "log"),
-            ("Esc", "back"),
-            ("q", "quit"),
-        ],
-        Mode::Trace => vec![
-            ("p", "probe"),
-            ("i", "install"),
-            ("r", "trace"),
-            ("0", "all"),
-            ("s", "stop"),
-            ("x", "clear"),
-            ("Tab", "panel"),
-            ("Up/Dn", "scroll"),
-            ("[ ]", "log"),
-            ("Esc", "back"),
-            ("q", "quit"),
-        ],
-        Mode::Config if app.config_editor.input.is_some() => {
-            vec![("Enter", "save"), ("Ctrl+U", "clear"), ("Esc", "cancel")]
-        }
-        Mode::Config if compact => vec![
-            ("Up/Dn", "sel"),
-            ("a", "add"),
-            ("e", "edit"),
-            ("d", "delete"),
-            ("s", "save"),
-            ("Esc", "back"),
-            ("q", "quit"),
-        ],
-        Mode::Config => vec![
-            ("Up/Dn", "select"),
-            ("a", "add"),
-            ("e", "edit"),
-            ("d", "delete"),
-            ("s", "save"),
-            ("Esc", "back"),
-            ("q", "quit"),
-        ],
-        Mode::Replay { .. } => vec![("Left/Right", "replay"), ("q", "quit")],
-    };
-
+fn command_spans(commands: &[(&'static str, &'static str)]) -> Vec<Span<'static>> {
     let mut spans = Vec::new();
-    for (index, (key, label_text)) in raw.iter().enumerate() {
+    for (index, (key, label_text)) in commands.iter().enumerate() {
         if index > 0 {
-            spans.push(Span::raw(if compact { "  " } else { "   " }));
+            spans.push(Span::raw("  "));
         }
         spans.push(Span::styled(
             (*key).to_owned(),
@@ -537,6 +463,129 @@ fn command_help(app: &App, width: u16) -> Vec<Span<'static>> {
         ));
     }
     spans
+}
+
+fn footer_commands(app: &App) -> Vec<(&'static str, &'static str)> {
+    match app.mode {
+        Mode::Live => vec![
+            ("t", "trace"),
+            ("0", "all"),
+            ("r", "refresh"),
+            ("c", "config"),
+            ("Tab", "panel"),
+            ("?", "more"),
+            ("q", "quit"),
+        ],
+        Mode::Trace => vec![
+            ("r", "trace"),
+            ("0", "all"),
+            ("Tab", "panel"),
+            ("?", "more"),
+            ("Esc", "back"),
+            ("q", "quit"),
+        ],
+        Mode::Config if app.config_editor.input.is_some() => {
+            vec![("Enter", "save"), ("Ctrl+U", "clear"), ("Esc", "cancel")]
+        }
+        Mode::Config => vec![
+            ("Up/Dn", "select"),
+            ("e", "edit"),
+            ("a", "add"),
+            ("d", "delete"),
+            ("s", "save"),
+            ("?", "more"),
+            ("Esc", "back"),
+            ("q", "quit"),
+        ],
+        Mode::Replay { .. } => vec![("Left/Right", "replay"), ("q", "quit")],
+    }
+}
+
+fn help_commands(app: &App) -> Vec<(&'static str, &'static str)> {
+    match app.mode {
+        Mode::Live => vec![
+            ("r", "one-shot refresh"),
+            ("c", "edit config"),
+            ("p", "probe readiness"),
+            ("i", "install osdtrace"),
+            ("v", "osdtrace targets view"),
+            ("t", "toggle trace (>=1ms)"),
+            ("0", "trace all observed ops"),
+            ("x", "clear captured trace"),
+            ("Tab / Shift+Tab", "focus next / prev panel"),
+            ("Up/Dn j/k", "scroll focused panel"),
+            ("PgUp/PgDn", "scroll faster"),
+            ("Home/End", "jump to start / end"),
+            ("-/+", "resize focused panel"),
+            ("q / Esc", "quit"),
+        ],
+        Mode::Trace => vec![
+            ("p", "probe readiness"),
+            ("i", "install osdtrace"),
+            ("r", "toggle trace (>=1ms)"),
+            ("0", "trace all observed ops"),
+            ("x", "clear captured trace"),
+            ("Tab / Shift+Tab", "focus next / prev panel"),
+            ("Up/Dn j/k", "scroll focused panel"),
+            ("-/+", "resize focused panel"),
+            ("Esc / c", "back to dashboard"),
+            ("q", "quit"),
+        ],
+        Mode::Config => vec![
+            ("Up/Dn", "select field or host row"),
+            ("e / Enter", "edit or toggle selected"),
+            ("a", "add host"),
+            ("d / Delete", "delete selected host row"),
+            ("s", "save current profile"),
+            ("Esc / c", "back to dashboard"),
+            ("q", "quit"),
+        ],
+        Mode::Replay { .. } => vec![
+            ("Left/Right", "previous / next snapshot"),
+            ("q / Esc", "quit"),
+        ],
+    }
+}
+
+fn draw_help_overlay(frame: &mut Frame<'_>, app: &App, area: Rect) {
+    let commands = help_commands(app);
+    let key_width = commands
+        .iter()
+        .map(|(key, _)| key.len())
+        .max()
+        .unwrap_or(3)
+        .max(3);
+    let mut lines = vec![
+        Line::styled("keys", Style::default().fg(ACCENT).bold()),
+        Line::raw(""),
+    ];
+    lines.extend(commands.iter().map(|(key, label_text)| {
+        Line::from(vec![
+            Span::styled(
+                format!("{:<width$}", key, width = key_width),
+                Style::default().fg(WARN).bold(),
+            ),
+            Span::raw("  "),
+            Span::styled((*label_text).to_owned(), Style::default().fg(TEXT)),
+        ])
+    }));
+    lines.push(Line::raw(""));
+    lines.push(Line::styled("any key closes", Style::default().fg(MUTED)));
+
+    let inner_width = commands
+        .iter()
+        .map(|(_, label)| key_width + 2 + label.len())
+        .max()
+        .unwrap_or(20)
+        .clamp(20, 60) as u16;
+    let modal = centered_rect(inner_width + 4, lines.len() as u16 + 2, area);
+    frame.render_widget(Clear, modal);
+    frame.render_widget(
+        Paragraph::new(lines)
+            .style(Style::default().fg(TEXT))
+            .block(panel(" help ")),
+        modal,
+    );
 }
 
 fn draw_insights(frame: &mut Frame<'_>, app: &App, area: Rect) {
@@ -881,6 +930,7 @@ fn draw_trace_events(frame: &mut Frame<'_>, app: &App, area: Rect) {
                 visible,
                 trace_scroll,
                 false,
+                resize_hint(app, PanelFocus::Trace, area),
             )),
         area,
     );
@@ -1271,6 +1321,7 @@ fn draw_nodes(frame: &mut Frame<'_>, app: &App, area: Rect) {
             visible,
             scroll,
             false,
+            resize_hint(app, PanelFocus::Nodes, area),
         )),
         area,
     );
@@ -1410,6 +1461,7 @@ fn draw_osds(frame: &mut Frame<'_>, app: &App, area: Rect) {
             visible,
             scroll,
             false,
+            resize_hint(app, PanelFocus::Osds, area),
         ))
         .row_highlight_style(Style::default().reversed());
 
@@ -1441,6 +1493,7 @@ fn draw_logs(frame: &mut Frame<'_>, app: &App, area: Rect) {
                 visible,
                 scroll,
                 true,
+                resize_hint(app, PanelFocus::Logs, area),
             ))
             .wrap(Wrap { trim: true }),
         area,
@@ -1451,6 +1504,7 @@ fn panel(title: &'static str) -> Block<'static> {
     panel_with_style(title.to_owned(), MUTED)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn scroll_panel(
     app: &App,
     focus: PanelFocus,
@@ -1459,12 +1513,40 @@ fn scroll_panel(
     visible: usize,
     scroll: usize,
     from_bottom: bool,
+    resize: Option<u16>,
 ) -> Block<'static> {
     let focused = app.focused_panel == focus;
     let marker = if focused { ">" } else { " " };
     let suffix = scroll_suffix(total, visible, scroll, from_bottom);
     let border = if focused { WARN } else { MUTED };
-    panel_with_style(format!(" {marker} {title}{suffix} "), border)
+    let mut block = panel_with_style(format!(" {marker} {title}{suffix} "), border);
+    if let Some(rows) = resize {
+        block = block.title_top(
+            Line::from(Span::styled(
+                format!(" -/+ {rows} "),
+                Style::default().fg(WARN),
+            ))
+            .right_aligned(),
+        );
+    }
+    block
+}
+
+fn resize_hint(app: &App, focus: PanelFocus, area: Rect) -> Option<u16> {
+    if app.focused_panel == focus && panel_resizable(&app.mode, focus) {
+        Some(area.height)
+    } else {
+        None
+    }
+}
+
+fn panel_resizable(mode: &Mode, focus: PanelFocus) -> bool {
+    match focus {
+        PanelFocus::Logs => true,
+        PanelFocus::Nodes | PanelFocus::Osds => matches!(mode, Mode::Live),
+        PanelFocus::Trace => matches!(mode, Mode::Live | Mode::Trace),
+        PanelFocus::Targets => matches!(mode, Mode::Trace),
+    }
 }
 
 fn scroll_suffix(total: usize, visible: usize, scroll: usize, from_bottom: bool) -> String {
