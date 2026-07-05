@@ -15,6 +15,7 @@ use crate::app::{
 use crate::editor::ConfigDraft;
 use crate::kfstrace::kfs_op_rows;
 use crate::model::NodeSummary;
+use crate::radostrace::rados_pool_rows;
 use crate::trace::{TraceGraphRow, dominant_component, trace_graph_rows as build_trace_graph_rows};
 use crate::util::{clamp_bottom_scroll, clamp_top_scroll, short};
 
@@ -394,6 +395,7 @@ fn footer_commands(app: &App) -> Vec<(&'static str, &'static str)> {
         Mode::Live => vec![
             ("t", "osd"),
             ("f", "kfs"),
+            ("r", "rados"),
             ("0", "all"),
             ("c", "config"),
             ("Tab", "panel"),
@@ -425,6 +427,7 @@ fn help_commands(app: &App) -> Vec<(&'static str, &'static str)> {
             ("i", "install osdtrace"),
             ("t", "toggle osdtrace (>=1ms)"),
             ("f", "toggle kfstrace (CephFS MDS)"),
+            ("r", "toggle radostrace (RADOS client)"),
             ("0", "osdtrace all observed ops"),
             ("x", "clear captured trace"),
             ("Tab / Shift+Tab", "focus next / prev panel"),
@@ -728,6 +731,82 @@ fn insight_line(insight: Insight) -> Line<'static> {
     ])
 }
 
+fn draw_radostrace_events(frame: &mut Frame<'_>, app: &App, area: Rect) {
+    let visible = table_visible_rows(area);
+    let rows_data = rados_pool_rows(&app.radostrace_events);
+    let total = rows_data.len();
+    let scroll = clamp_top_scroll(app.trace_scroll, total, visible);
+    let active = app.radostrace_active > 0;
+
+    let rows: Vec<Row<'static>> = if rows_data.is_empty() {
+        let hint = if active {
+            "radostrace listening; generate librados I/O"
+        } else {
+            "press r to trace librados client ops on client_hosts"
+        };
+        vec![Row::new(vec![
+            Cell::from("-"),
+            Cell::from("0").style(Style::default().fg(MUTED)),
+            Cell::from("-"),
+            Cell::from("-"),
+            Cell::from("-"),
+            Cell::from(hint).style(Style::default().fg(MUTED)),
+        ])]
+    } else {
+        rows_data
+            .iter()
+            .skip(scroll)
+            .take(visible)
+            .map(|row| {
+                Row::new(vec![
+                    Cell::from(format!("pool {}", row.pool))
+                        .style(Style::default().fg(ACCENT).bold()),
+                    Cell::from(row.count.to_string()).style(trace_ops_style(row.count)),
+                    Cell::from(format_latency_us(row.avg_us)),
+                    Cell::from(format_latency_us(row.max_us))
+                        .style(Style::default().fg(latency_color(row.max_us))),
+                    Cell::from(row.writes.to_string()).style(Style::default().fg(BLUE)),
+                    Cell::from(row.reads.to_string()).style(Style::default().fg(OK)),
+                ])
+            })
+            .collect()
+    };
+
+    let title = if active {
+        "radostrace running"
+    } else {
+        "radostrace"
+    };
+    frame.render_widget(
+        Table::new(
+            rows,
+            [
+                Constraint::Length(9),
+                Constraint::Length(7),
+                Constraint::Length(8),
+                Constraint::Length(8),
+                Constraint::Length(6),
+                Constraint::Min(6),
+            ],
+        )
+        .header(
+            Row::new(["Pool", "Ops", "Avg", "Max", "W", "R"])
+                .style(Style::default().fg(MUTED).bold()),
+        )
+        .block(scroll_panel(
+            app,
+            PanelFocus::Trace,
+            title,
+            total,
+            visible,
+            scroll,
+            false,
+            resize_hint(app, PanelFocus::Trace, area),
+        )),
+        area,
+    );
+}
+
 fn draw_kfstrace_events(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let visible = table_visible_rows(area);
     let rows_data = kfs_op_rows(&app.kfstrace_events);
@@ -811,6 +890,10 @@ fn draw_kfstrace_events(frame: &mut Frame<'_>, app: &App, area: Rect) {
 fn draw_trace_events(frame: &mut Frame<'_>, app: &App, area: Rect) {
     if app.trace_source == TraceSource::Kfstrace {
         draw_kfstrace_events(frame, app, area);
+        return;
+    }
+    if app.trace_source == TraceSource::Radostrace {
+        draw_radostrace_events(frame, app, area);
         return;
     }
     let visible = table_visible_rows(area);

@@ -21,6 +21,7 @@ use crate::{
     editor::ConfigEditor,
     kfstrace::{KfsEvent, parse_kfs_event},
     model::{NodeSummary, Snapshot},
+    radostrace::{RadosEvent, parse_rados_event},
     runner::{
         CleanupResult, cleanup_trace_runners_async, cleanup_trace_runners_wait, install_trace_host,
         probe_trace_host, trace_runner_install_command, trace_runner_script, trace_threshold_label,
@@ -51,6 +52,8 @@ pub(crate) enum WorkerMsg {
     TraceDone { host: String, message: String },
     KfsLine { host: String, line: String },
     KfsDone { host: String, message: String },
+    RadosLine { host: String, line: String },
+    RadosDone { host: String, message: String },
 }
 
 #[derive(Clone, Debug)]
@@ -114,6 +117,7 @@ pub(crate) enum PanelFocus {
 pub(crate) enum TraceSource {
     Osdtrace,
     Kfstrace,
+    Radostrace,
 }
 
 pub(crate) struct App {
@@ -153,6 +157,9 @@ pub(crate) struct App {
     pub(crate) kfstrace_events: Vec<KfsEvent>,
     pub(crate) kfstrace_active: usize,
     pub(crate) kfstrace_stop: Arc<AtomicBool>,
+    pub(crate) radostrace_events: Vec<RadosEvent>,
+    pub(crate) radostrace_active: usize,
+    pub(crate) radostrace_stop: Arc<AtomicBool>,
     pub(crate) trace_auto_start: bool,
     pub(crate) trace_window_secs: u64,
     pub(crate) trace_latency_ms: u64,
@@ -206,6 +213,7 @@ pub(crate) fn start_live_streams(app: &mut App) {
 pub(crate) fn shutdown_streams(app: &App, wait_for_cleanup: bool) -> Vec<CleanupResult> {
     app.trace_stop.store(true, Ordering::SeqCst);
     app.kfstrace_stop.store(true, Ordering::SeqCst);
+    app.radostrace_stop.store(true, Ordering::SeqCst);
     if live_streams_active(app) {
         app.stream_stop.store(true, Ordering::SeqCst);
     }
@@ -430,6 +438,23 @@ pub(crate) fn drain_worker_messages(app: &mut App) {
             WorkerMsg::KfsDone { host, message } => {
                 app.kfstrace_active = app.kfstrace_active.saturating_sub(1);
                 app.log(format!("kfstrace {host}: {message}"));
+            }
+            WorkerMsg::RadosLine { host, line } => {
+                let trimmed = line.trim();
+                if let Some(err) = trimmed.strip_prefix("__CEPHLENS_RADOS_ERROR__") {
+                    app.log(format!("radostrace {host}: {}", err.trim()));
+                    continue;
+                }
+                if let Some(event) = parse_rados_event(trimmed) {
+                    app.radostrace_events.push(event);
+                    if app.radostrace_events.len() > 500 {
+                        app.radostrace_events.drain(0..100);
+                    }
+                }
+            }
+            WorkerMsg::RadosDone { host, message } => {
+                app.radostrace_active = app.radostrace_active.saturating_sub(1);
+                app.log(format!("radostrace {host}: {message}"));
             }
         }
     }
@@ -827,6 +852,142 @@ fn spawn_kfstrace_runner(
         let _ = tx.send(WorkerMsg::KfsDone {
             host,
             message: "kfstrace exited".to_owned(),
+        });
+    });
+}
+
+pub(crate) fn toggle_radostrace(app: &mut App) {
+    if app.radostrace_active > 0 {
+        stop_radostrace(app);
+    } else {
+        spawn_radostrace_run(app);
+    }
+}
+
+pub(crate) fn spawn_radostrace_run(app: &mut App) {
+    if app.radostrace_active > 0 {
+        return;
+    }
+    if app.client_hosts.is_empty() {
+        app.log("radostrace skipped: no client_hosts configured");
+        return;
+    }
+    app.radostrace_events.clear();
+    app.radostrace_stop.store(true, Ordering::SeqCst);
+    app.radostrace_stop = Arc::new(AtomicBool::new(false));
+    app.radostrace_active = app.client_hosts.len();
+    let ttl_secs = app.trace_ttl_secs.max(1);
+    app.log(format!(
+        "starting radostrace on {} client hosts: ttl={ttl_secs}s",
+        app.client_hosts.len()
+    ));
+    for host in app.client_hosts.clone() {
+        spawn_radostrace_runner(host, app.tx.clone(), ttl_secs, app.radostrace_stop.clone());
+    }
+}
+
+pub(crate) fn stop_radostrace(app: &mut App) {
+    app.radostrace_stop.store(true, Ordering::SeqCst);
+    app.log("radostrace stopping");
+}
+
+fn radostrace_run_command(ttl_secs: u64) -> String {
+    format!(
+        r#"
+bin=$(command -v radostrace 2>/dev/null || true)
+if [ -z "$bin" ] && [ -x "$HOME/.cephlens/bin/radostrace" ]; then
+  bin="$HOME/.cephlens/bin/radostrace"
+fi
+if [ -z "$bin" ]; then
+  echo "__CEPHLENS_RADOS_ERROR__ radostrace missing"
+  exit 127
+fi
+if ! sudo -n true 2>/dev/null; then
+  echo "__CEPHLENS_RADOS_ERROR__ sudo -n unavailable"
+  exit 126
+fi
+exec sudo -n "$bin" -t {ttl_secs} 2>&1
+"#
+    )
+}
+
+fn spawn_radostrace_runner(
+    host: String,
+    tx: Sender<WorkerMsg>,
+    ttl_secs: u64,
+    stop: Arc<AtomicBool>,
+) {
+    thread::spawn(move || {
+        let command = radostrace_run_command(ttl_secs);
+        let remote = format!("sh -c {}", shell_quote(&command));
+        let child_result = ProcessCommand::new("ssh")
+            .args([
+                "-o",
+                "BatchMode=yes",
+                "-o",
+                "ConnectTimeout=8",
+                "-o",
+                "ServerAliveInterval=5",
+                "-o",
+                "ServerAliveCountMax=2",
+            ])
+            .arg(&host)
+            .arg(remote)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn();
+
+        let mut child = match child_result {
+            Ok(child) => child,
+            Err(err) => {
+                let _ = tx.send(WorkerMsg::RadosDone {
+                    host,
+                    message: format!("failed to start ssh: {err}"),
+                });
+                return;
+            }
+        };
+
+        if let Some(stderr) = child.stderr.take() {
+            let err_tx = tx.clone();
+            let err_host = host.clone();
+            thread::spawn(move || {
+                let reader = BufReader::new(stderr);
+                for line in reader.lines().map_while(Result::ok) {
+                    if !line.trim().is_empty() {
+                        let _ = err_tx.send(WorkerMsg::RadosLine {
+                            host: err_host.clone(),
+                            line,
+                        });
+                    }
+                }
+            });
+        }
+
+        if let Some(stdout) = child.stdout.take() {
+            let reader = BufReader::new(stdout);
+            for line in reader.lines() {
+                if stop.load(Ordering::SeqCst) {
+                    let _ = child.kill();
+                    break;
+                }
+                match line {
+                    Ok(payload) if !payload.trim().is_empty() => {
+                        let _ = tx.send(WorkerMsg::RadosLine {
+                            host: host.clone(),
+                            line: payload,
+                        });
+                    }
+                    Ok(_) => {}
+                    Err(_) => break,
+                }
+            }
+        }
+        let _ = child.wait();
+        let _ = tx.send(WorkerMsg::RadosDone {
+            host,
+            message: "radostrace exited".to_owned(),
         });
     });
 }

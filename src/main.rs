@@ -22,6 +22,7 @@ mod config;
 mod editor;
 mod kfstrace;
 mod model;
+mod radostrace;
 mod runner;
 mod session;
 mod ssh;
@@ -34,7 +35,7 @@ use app::{
     App, EVENT_LOG_DEFAULT_HEIGHT, EVENT_LOG_MIN_HEIGHT, EVENT_LOG_RESERVED_ROWS, Mode, PanelFocus,
     TraceSource, drain_worker_messages, replay_move, request_quit, shutdown_streams, spawn_probe,
     spawn_trace_install, spawn_trace_probe, spawn_trace_run, start_live_streams, toggle_kfstrace,
-    toggle_trace,
+    toggle_radostrace, toggle_trace,
 };
 use collect::{collect_snapshot, run_bench, run_probe};
 use config::{
@@ -281,6 +282,9 @@ fn run_live_tui(config_path: PathBuf, cfg: ResolvedConfig) -> Result<()> {
         kfstrace_events: Vec::new(),
         kfstrace_active: 0,
         kfstrace_stop: Arc::new(AtomicBool::new(false)),
+        radostrace_events: Vec::new(),
+        radostrace_active: 0,
+        radostrace_stop: Arc::new(AtomicBool::new(false)),
         trace_auto_start: cfg.trace_auto_start,
         trace_window_secs: cfg.trace_window_secs,
         trace_latency_ms: cfg.trace_latency_ms,
@@ -364,6 +368,9 @@ fn run_replay_tui(file: PathBuf) -> Result<()> {
         kfstrace_events: Vec::new(),
         kfstrace_active: 0,
         kfstrace_stop: Arc::new(AtomicBool::new(false)),
+        radostrace_events: Vec::new(),
+        radostrace_active: 0,
+        radostrace_stop: Arc::new(AtomicBool::new(false)),
         trace_auto_start: false,
         trace_window_secs: 10,
         trace_latency_ms: 1,
@@ -496,6 +503,11 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Result<bool> {
                 app.trace_source = TraceSource::Kfstrace;
                 let latency_us = app.trace_latency_ms.saturating_mul(1000);
                 toggle_kfstrace(app, latency_us);
+                Ok(false)
+            }
+            KeyCode::Char('r') => {
+                app.trace_source = TraceSource::Radostrace;
+                toggle_radostrace(app);
                 Ok(false)
             }
             KeyCode::Char('i') => {
