@@ -9,8 +9,8 @@ use ratatui::{
 };
 
 use crate::app::{
-    App, EVENT_LOG_MAX_HEIGHT, EVENT_LOG_MIN_HEIGHT, Mode, PanelFocus, StreamState, StreamStatus,
-    live_streams_active,
+    App, EVENT_LOG_MIN_HEIGHT, EVENT_LOG_RESERVED_ROWS, Mode, PanelFocus, StreamState,
+    StreamStatus, live_streams_active,
 };
 use crate::editor::ConfigDraft;
 use crate::model::NodeSummary;
@@ -71,11 +71,9 @@ pub(crate) fn draw(frame: &mut Frame<'_>, app: &App) {
 fn event_log_height_for(area: Rect, preferred: u16) -> u16 {
     let terminal_limit = area
         .height
-        .saturating_sub(10)
-        .clamp(EVENT_LOG_MIN_HEIGHT, EVENT_LOG_MAX_HEIGHT);
-    preferred
-        .clamp(EVENT_LOG_MIN_HEIGHT, EVENT_LOG_MAX_HEIGHT)
-        .min(terminal_limit)
+        .saturating_sub(EVENT_LOG_RESERVED_ROWS)
+        .max(EVENT_LOG_MIN_HEIGHT);
+    preferred.max(EVENT_LOG_MIN_HEIGHT).min(terminal_limit)
 }
 
 fn draw_quit_confirm(frame: &mut Frame<'_>, app: &App, area: Rect) {

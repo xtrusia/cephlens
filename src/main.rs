@@ -30,7 +30,7 @@ mod ui;
 mod util;
 
 use app::{
-    App, EVENT_LOG_DEFAULT_HEIGHT, EVENT_LOG_MAX_HEIGHT, EVENT_LOG_MIN_HEIGHT, Mode, PanelFocus,
+    App, EVENT_LOG_DEFAULT_HEIGHT, EVENT_LOG_MIN_HEIGHT, EVENT_LOG_RESERVED_ROWS, Mode, PanelFocus,
     drain_worker_messages, replay_move, request_quit, shutdown_streams, spawn_probe,
     spawn_snapshot, spawn_trace_install, spawn_trace_probe, spawn_trace_run, start_live_streams,
     toggle_trace,
@@ -252,6 +252,7 @@ fn run_live_tui(config_path: PathBuf, cfg: ResolvedConfig) -> Result<()> {
         rx,
         logs: Vec::new(),
         event_log_height: EVENT_LOG_DEFAULT_HEIGHT,
+        terminal_height: 24,
         overview_offset: 0,
         insights_offset: 0,
         show_help: false,
@@ -328,6 +329,7 @@ fn run_replay_tui(file: PathBuf) -> Result<()> {
         rx,
         logs: vec![format!("replay loaded from {}", file.display())],
         event_log_height: EVENT_LOG_DEFAULT_HEIGHT,
+        terminal_height: 24,
         overview_offset: 0,
         insights_offset: 0,
         show_help: false,
@@ -388,6 +390,9 @@ fn run_app(
     loop {
         drain_worker_messages(&mut app);
 
+        if let Ok(size) = terminal.size() {
+            app.terminal_height = size.height;
+        }
         terminal.draw(|frame| ui::draw(frame, &app))?;
 
         if event::poll(Duration::from_millis(150))? {
@@ -647,8 +652,12 @@ fn scroll_with_delta(current: usize, delta: isize) -> usize {
 
 fn adjust_event_log_height(app: &mut App, delta: i16) {
     let before = app.event_log_height;
-    let next = (app.event_log_height as i16 + delta)
-        .clamp(EVENT_LOG_MIN_HEIGHT as i16, EVENT_LOG_MAX_HEIGHT as i16) as u16;
+    let max = app
+        .terminal_height
+        .saturating_sub(EVENT_LOG_RESERVED_ROWS)
+        .max(EVENT_LOG_MIN_HEIGHT);
+    let next =
+        (app.event_log_height as i16 + delta).clamp(EVENT_LOG_MIN_HEIGHT as i16, max as i16) as u16;
     app.event_log_height = next;
     if next != before {
         app.log(format!("event log height: {next} rows"));

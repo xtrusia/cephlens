@@ -36,7 +36,9 @@ use crate::{
 
 pub(crate) const EVENT_LOG_MIN_HEIGHT: u16 = 3;
 pub(crate) const EVENT_LOG_DEFAULT_HEIGHT: u16 = 6;
-pub(crate) const EVENT_LOG_MAX_HEIGHT: u16 = 16;
+// Rows reserved for the header, footer, and a usable body when the event log
+// grows. The log is capped at terminal_height - EVENT_LOG_RESERVED_ROWS.
+pub(crate) const EVENT_LOG_RESERVED_ROWS: u16 = 10;
 const SESSION_SNAPSHOT_LIMIT: usize = 10_000;
 
 #[derive(Clone, Debug)]
@@ -124,6 +126,7 @@ pub(crate) struct App {
     pub(crate) rx: Receiver<WorkerMsg>,
     pub(crate) logs: Vec<String>,
     pub(crate) event_log_height: u16,
+    pub(crate) terminal_height: u16,
     pub(crate) overview_offset: i16,
     pub(crate) insights_offset: i16,
     pub(crate) show_help: bool,
