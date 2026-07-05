@@ -2,3 +2,5 @@
 /.cephlens/
 cephlens.toml
 *.pdb
+# cephtrace binaries are fetched during the release build, not committed
+/third_party/cephtrace/bin/

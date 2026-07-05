@@ -231,7 +231,14 @@ ids, CPU percentage, and memory percentage.
 
 MIT — see [LICENSE](LICENSE).
 
-cephlens drives the `osdtrace` binary from the
+cephlens drives the `osdtrace`, `kfstrace`, and `radostrace` binaries from the
 [cephtrace](https://github.com/taodd/cephtrace) project, which is licensed
-separately under GPL-2.0. cephlens runs it as an external command over SSH and
-does not link against it.
+separately under GPL-2.0. cephlens runs them as external commands over SSH and
+does not link against them.
+
+Release archives bundle those cephtrace binaries so installation is
+self-contained (including for air-gapped clusters). That bundling is mere
+aggregation and does not change cephlens's MIT license; the GPL-2.0 license text
+and attribution are in [`third_party/cephtrace`](third_party/cephtrace), and the
+corresponding source is at the URL above. Building from source does not bundle
+them — supply the tracers yourself (`~/.cephlens/bin/<tool>` or `PATH`).

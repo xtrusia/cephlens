@@ -1,0 +1,17 @@
+# Injected into the dist build jobs via `github-build-setup` in dist-workspace.toml.
+# Fetches the cephtrace tracer binaries so they get bundled into every release
+# archive (see third_party/cephtrace/NOTICE.md). Not a standalone workflow; it
+# lives in a subdirectory so GitHub does not run it on its own.
+- name: Bundle cephtrace tracers
+  shell: bash
+  run: |
+    set -euo pipefail
+    dest="third_party/cephtrace/bin/linux-x86_64"
+    mkdir -p "$dest"
+    for tool in osdtrace kfstrace radostrace; do
+      curl --proto '=https' --tlsv1.2 -fL --retry 3 \
+        -o "$dest/$tool" \
+        "https://github.com/taodd/cephtrace/releases/latest/download/$tool"
+      chmod +x "$dest/$tool"
+    done
+    ls -l "$dest"

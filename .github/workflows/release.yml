@@ -127,6 +127,19 @@ jobs:
             curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
             echo "$HOME/.cargo/bin" >> $GITHUB_PATH
           fi
+      - name: "Bundle cephtrace tracers"
+        run: |
+          set -euo pipefail
+          dest="third_party/cephtrace/bin/linux-x86_64"
+          mkdir -p "$dest"
+          for tool in osdtrace kfstrace radostrace; do
+            curl --proto '=https' --tlsv1.2 -fL --retry 3 \
+              -o "$dest/$tool" \
+              "https://github.com/taodd/cephtrace/releases/latest/download/$tool"
+            chmod +x "$dest/$tool"
+          done
+          ls -l "$dest"
+        shell: "bash"
       - name: Install dist
         run: ${{ matrix.install_dist.run }}
       # Get the dist-manifest
