@@ -52,6 +52,7 @@ use trace::{TraceInstallConfig, validate_sha256};
 
 #[derive(Parser, Debug)]
 #[command(name = "cephlens")]
+#[command(version)]
 #[command(about = "A small Ceph investigation TUI prototype")]
 struct Cli {
     #[arg(long, global = true, default_value = "cephlens.toml")]
@@ -71,6 +72,18 @@ struct Cli {
 
     #[command(subcommand)]
     command: Option<Commands>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::CommandFactory;
+
+    #[test]
+    fn cli_exposes_package_version() {
+        let command = Cli::command();
+        assert_eq!(command.get_version(), Some(env!("CARGO_PKG_VERSION")));
+    }
 }
 
 #[derive(Subcommand, Debug)]
