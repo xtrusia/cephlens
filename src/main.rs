@@ -492,7 +492,7 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Result<bool> {
                 spawn_trace_run(app, 0);
                 Ok(false)
             }
-            KeyCode::Char('k') => {
+            KeyCode::Char('f') => {
                 app.trace_source = TraceSource::Kfstrace;
                 let latency_us = app.trace_latency_ms.saturating_mul(1000);
                 toggle_kfstrace(app, latency_us);

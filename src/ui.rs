@@ -393,7 +393,7 @@ fn footer_commands(app: &App) -> Vec<(&'static str, &'static str)> {
     match app.mode {
         Mode::Live => vec![
             ("t", "osd"),
-            ("k", "kfs"),
+            ("f", "kfs"),
             ("0", "all"),
             ("c", "config"),
             ("Tab", "panel"),
@@ -424,7 +424,7 @@ fn help_commands(app: &App) -> Vec<(&'static str, &'static str)> {
             ("p", "probe node + osdtrace readiness"),
             ("i", "install osdtrace"),
             ("t", "toggle osdtrace (>=1ms)"),
-            ("k", "toggle kfstrace (CephFS MDS)"),
+            ("f", "toggle kfstrace (CephFS MDS)"),
             ("0", "osdtrace all observed ops"),
             ("x", "clear captured trace"),
             ("Tab / Shift+Tab", "focus next / prev panel"),
@@ -740,7 +740,7 @@ fn draw_kfstrace_events(frame: &mut Frame<'_>, app: &App, area: Rect) {
             let hint = if active {
                 "kfstrace listening; generate CephFS metadata ops"
             } else {
-                "press k to trace CephFS MDS ops on client_hosts"
+                "press f to trace CephFS MDS ops on client_hosts"
             };
             vec![Row::new(vec![
                 Cell::from("-"),
