@@ -17,6 +17,10 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Format
         run: cargo fmt --all --check
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --version 0.22.2 --locked
+      - name: Audit dependencies
+        run: cargo audit
       - name: Clippy
         run: cargo clippy --all-targets -- -D warnings
       - name: Build
