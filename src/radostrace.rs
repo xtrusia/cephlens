@@ -58,7 +58,7 @@ pub(crate) fn rados_pool_rows(events: &[RadosEvent]) -> Vec<RadosPoolRow> {
         .map(|(pool, (count, sum, max, writes, reads))| RadosPoolRow {
             pool,
             count,
-            avg_us: if count > 0 { sum / count } else { 0 },
+            avg_us: sum.checked_div(count).unwrap_or(0),
             max_us: max,
             writes,
             reads,

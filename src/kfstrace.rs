@@ -81,7 +81,7 @@ pub(crate) fn kfs_op_rows(events: &[KfsEvent]) -> Vec<KfsOpRow> {
         .map(|(op, (count, sum, max, unsafe_count))| KfsOpRow {
             op,
             count,
-            avg_us: if count > 0 { sum / count } else { 0 },
+            avg_us: sum.checked_div(count).unwrap_or(0),
             max_us: max,
             unsafe_count,
         })

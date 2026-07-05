@@ -495,7 +495,7 @@ pub(crate) fn trace_graph_rows(
                 osd,
                 host,
                 ops,
-                avg_us: if ops > 0 { sum_us / ops } else { 0 },
+                avg_us: sum_us.checked_div(ops).unwrap_or(0),
                 max_us,
                 throttle_max_us,
                 recv_max_us,
