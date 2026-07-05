@@ -46,12 +46,12 @@ Install script (picks the right binary for your platform):
 
 ```sh
 # Linux / macOS
-curl --proto '=https' --tlsv1.2 -LsSf https://github.com/xtrusia/cephlens/releases/latest/download/cephlens-installer.sh | sh
+curl --proto '=https' --tlsv1.2 -LsSf https://cephlens.seyeong.kim/install.sh | sh
 ```
 
 ```powershell
 # Windows (PowerShell)
-irm https://github.com/xtrusia/cephlens/releases/latest/download/cephlens-installer.ps1 | iex
+irm https://cephlens.seyeong.kim/install.ps1 | iex
 ```
 
 Or download a `cephlens-<target>.tar.xz` / `.zip` archive and extract it. Each
