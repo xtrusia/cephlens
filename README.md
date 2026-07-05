@@ -27,7 +27,7 @@ cephlens exits.
 Controller (where the TUI runs):
 
 - Rust 1.85+ (edition 2024) to build.
-- An OpenSSH client on `PATH`, with every host reachable over non-interactive SSH (key-based, no password prompt).
+- An OpenSSH client on `PATH`, with every host reachable over non-interactive SSH (key-based, no password prompt). Windows 10/11 ship this as the optional OpenSSH Client feature; macOS and Linux include it by default.
 
 Ceph nodes:
 
@@ -42,7 +42,15 @@ cleanup behavior described below.
 
 ## Configuration
 
-Copy the example config and edit it for your cluster:
+Copy the example config and edit it for your cluster.
+
+Linux and macOS:
+
+```sh
+cp cephlens.example.toml cephlens.toml
+```
+
+Windows (PowerShell):
 
 ```powershell
 Copy-Item cephlens.example.toml cephlens.toml
@@ -80,7 +88,7 @@ cephlens does not install a permanent agent on Ceph nodes. It opens SSH
 connections from the machine running the TUI, so each configured host must be
 reachable with non-interactive SSH:
 
-```powershell
+```sh
 ssh ceph-admin hostname
 ssh ceph-node-1 hostname
 ```
@@ -147,7 +155,7 @@ check for lab use only; do not use it for production clusters.
 
 ## Quick start
 
-```powershell
+```sh
 cargo run -- snapshot
 cargo run -- probe
 cargo run -- record --count 3 --interval-secs 2
@@ -157,7 +165,7 @@ cargo run -- bench --host ceph-node-1 --seconds 5
 
 Create a fresh config template:
 
-```powershell
+```sh
 cargo run -- init-config
 ```
 
