@@ -7,9 +7,13 @@ authors = ["cephlens contributors"]
 description = "A lab-first Ceph investigation TUI with SSH-based status and osdtrace views"
 readme = "README.md"
 license = "MIT"
+repository = "https://github.com/xtrusia/cephlens"
 keywords = ["ceph", "tui", "ebpf", "observability", "storage"]
 categories = ["command-line-utilities", "development-tools::profiling"]
 publish = false
+
+[package.metadata.dist]
+dist = true
 
 [dependencies]
 anyhow = "1.0"
@@ -20,3 +24,8 @@ ratatui = "0.30"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 toml = "0.9"
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"
