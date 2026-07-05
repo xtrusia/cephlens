@@ -6,6 +6,26 @@ Notable changes are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-07-05
+
+### Added
+
+- Added `cephlens --version` so installed binaries report the Cargo package
+  version.
+
+## [0.1.1] - 2026-07-05
+
+### Security
+
+- Hardened SSH destination validation to reject option-like, empty, or
+  whitespace-containing host values before invoking `ssh`.
+- Pinned bundled cephtrace artifacts to `v1.6` and verified their SHA256
+  digests during release builds.
+
+### Changed
+
+- Improved bundled cephtrace GPL notice and release artifact attribution.
+
 ## [0.1.0] - 2026-07-05
 
 Initial release.
@@ -18,5 +38,7 @@ Initial release.
 - Cross-platform controller (Linux, macOS, Windows) with cargo-dist release
   archives that bundle the cephtrace tracers.
 
-[Unreleased]: https://github.com/xtrusia/cephlens/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/xtrusia/cephlens/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/xtrusia/cephlens/compare/v0.1.1...v0.1.2
+[0.1.1]: https://github.com/xtrusia/cephlens/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/xtrusia/cephlens/releases/tag/v0.1.0
