@@ -6,12 +6,30 @@
   shell: bash
   run: |
     set -euo pipefail
+    cephtrace_version="v1.6"
     dest="third_party/cephtrace/bin/linux-x86_64"
     mkdir -p "$dest"
     for tool in osdtrace kfstrace radostrace; do
+      case "$tool" in
+        osdtrace) expected_sha256="ffee09562187a19bbf1ef4f0fe8de2acb820e90a1ebf3329521cc51757ffed6d" ;;
+        kfstrace) expected_sha256="7aac74b5b19d9dbbc33e273fb284ba10f4ce3b07bca62216231b41014f734f31" ;;
+        radostrace) expected_sha256="b7f63448ccac6e31a79e20af4142623ece67c2d5049bf84a3433749cfe8caa41" ;;
+      esac
       curl --proto '=https' --tlsv1.2 -fL --retry 3 \
         -o "$dest/$tool" \
-        "https://github.com/taodd/cephtrace/releases/latest/download/$tool"
+        "https://github.com/taodd/cephtrace/releases/download/$cephtrace_version/$tool"
+      if command -v sha256sum >/dev/null 2>&1; then
+        actual_sha256=$(sha256sum "$dest/$tool" | awk '{print $1}')
+      elif command -v shasum >/dev/null 2>&1; then
+        actual_sha256=$(shasum -a 256 "$dest/$tool" | awk '{print $1}')
+      else
+        echo "sha256sum or shasum is required" >&2
+        exit 1
+      fi
+      if [ "$actual_sha256" != "$expected_sha256" ]; then
+        echo "checksum mismatch for $tool: expected $expected_sha256 got $actual_sha256" >&2
+        exit 1
+      fi
       chmod +x "$dest/$tool"
     done
     ls -l "$dest"

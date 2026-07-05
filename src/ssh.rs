@@ -8,6 +8,7 @@ pub(crate) fn ssh_capture(host: &str, command: &str) -> Result<String> {
     let remote = format!("sh -c {}", shell_quote(command));
     let output = ProcessCommand::new("ssh")
         .args(["-o", "BatchMode=yes", "-o", "ConnectTimeout=8"])
+        .arg("--")
         .arg(host)
         .arg(remote)
         .output()

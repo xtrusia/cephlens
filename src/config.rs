@@ -101,10 +101,49 @@ pub(crate) fn normalize_hosts<'a>(hosts: impl IntoIterator<Item = &'a str>) -> V
     clean
 }
 
+pub(crate) fn validate_ssh_destination(label: &str, destination: &str) -> Result<()> {
+    if destination.is_empty() {
+        return Err(anyhow!("{label} is empty"));
+    }
+    if destination.starts_with('-') {
+        return Err(anyhow!("{label} must not start with '-'"));
+    }
+    if destination
+        .chars()
+        .any(|ch| ch.is_whitespace() || ch.is_control())
+    {
+        return Err(anyhow!(
+            "{label} must not contain whitespace or control characters"
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_ssh_destinations(label: &str, destinations: &[String]) -> Result<()> {
+    for destination in destinations {
+        validate_ssh_destination(label, destination)?;
+    }
+    Ok(())
+}
+
 pub(crate) fn clean_optional(value: &Option<String>) -> Option<String> {
     value
         .as_ref()
         .map(|value| value.trim())
         .filter(|value| !value.is_empty())
         .map(ToOwned::to_owned)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ssh_destination_validation_rejects_options_and_shell_fragments() {
+        assert!(validate_ssh_destination("host", "ceph-admin").is_ok());
+        assert!(validate_ssh_destination("host", "user@ceph-node-1").is_ok());
+        assert!(validate_ssh_destination("host", "-oProxyCommand=sh").is_err());
+        assert!(validate_ssh_destination("host", "ceph admin").is_err());
+        assert!(validate_ssh_destination("host", "ceph\nadmin").is_err());
+    }
 }

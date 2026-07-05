@@ -11,7 +11,10 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::{
     app::{App, Mode, request_quit, shutdown_streams, start_live_streams},
-    config::{ClusterProfile, ConfigFile, ResolvedConfig, load_config_file, normalize_hosts},
+    config::{
+        ClusterProfile, ConfigFile, ResolvedConfig, load_config_file, normalize_hosts,
+        validate_ssh_destination, validate_ssh_destinations,
+    },
     trace::{TraceInstallConfig, validate_sha256},
 };
 
@@ -340,6 +343,7 @@ fn apply_editor_input(editor: &mut ConfigEditor, input: &EditorInput) -> Result<
             if value.is_empty() {
                 return Err(anyhow!("admin host is empty"));
             }
+            validate_ssh_destination("admin host", value)?;
             editor.draft.admin_host = value.to_owned();
         }
         EditorAction::SetRefreshSecs => {
@@ -382,6 +386,7 @@ fn apply_editor_input(editor: &mut ConfigEditor, input: &EditorInput) -> Result<
             if value.is_empty() {
                 return Err(anyhow!("host is empty"));
             }
+            validate_ssh_destination("host", value)?;
             if editor.draft.hosts.iter().any(|host| host == value) {
                 return Err(anyhow!("host '{value}' already exists"));
             }
@@ -392,6 +397,7 @@ fn apply_editor_input(editor: &mut ConfigEditor, input: &EditorInput) -> Result<
             if value.is_empty() {
                 return Err(anyhow!("host is empty"));
             }
+            validate_ssh_destination("host", value)?;
             if editor
                 .draft
                 .hosts
@@ -553,6 +559,9 @@ fn validate_config_draft(draft: &ConfigDraft) -> Result<()> {
     if draft.hosts.is_empty() {
         return Err(anyhow!("host list is empty"));
     }
+    validate_ssh_destination("admin host", &draft.admin_host)?;
+    validate_ssh_destinations("host", &draft.hosts)?;
+    validate_ssh_destinations("client host", &draft.client_hosts)?;
     if draft.refresh_secs == 0 {
         return Err(anyhow!("refresh interval must be at least 1 second"));
     }
@@ -663,6 +672,26 @@ mod tests {
         assert!(validate_config_draft(&bad).is_err());
         let mut bad = draft();
         bad.refresh_secs = 0;
+        assert!(validate_config_draft(&bad).is_err());
+    }
+
+    #[test]
+    fn validate_rejects_ssh_option_like_hosts() {
+        let mut editor = editor();
+        assert!(
+            apply_editor_input(
+                &mut editor,
+                &input(EditorAction::AddHost, "-oProxyCommand=sh")
+            )
+            .is_err()
+        );
+
+        let mut bad = draft();
+        bad.admin_host = "-oProxyCommand=sh".to_owned();
+        assert!(validate_config_draft(&bad).is_err());
+
+        let mut bad = draft();
+        bad.hosts = vec!["a".to_owned(), "bad host".to_owned()];
         assert!(validate_config_draft(&bad).is_err());
     }
 

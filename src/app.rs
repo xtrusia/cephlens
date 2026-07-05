@@ -277,6 +277,7 @@ fn spawn_persistent_ssh_stream(
                     "-o",
                     "ServerAliveCountMax=2",
                 ])
+                .arg("--")
                 .arg(&host)
                 .arg(remote)
                 .stdin(Stdio::null())
@@ -848,6 +849,7 @@ fn spawn_kfstrace_runner(
                 "-o",
                 "ServerAliveCountMax=2",
             ])
+            .arg("--")
             .arg(&host)
             .arg(remote)
             .stdin(Stdio::null())
@@ -976,6 +978,7 @@ fn spawn_radostrace_runner(
                 "-o",
                 "ServerAliveCountMax=2",
             ])
+            .arg("--")
             .arg(&host)
             .arg(remote)
             .stdin(Stdio::null())
@@ -1082,6 +1085,7 @@ fn spawn_trace_runner(
                 "-o",
                 "ServerAliveCountMax=2",
             ])
+            .arg("--")
             .arg(&host)
             .arg(remote)
             .stdin(Stdio::piped())

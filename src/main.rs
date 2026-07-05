@@ -40,7 +40,8 @@ use app::{
 use collect::{collect_snapshot, run_bench, run_probe};
 use config::{
     DEFAULT_TRACE_TTL_SECS, ResolvedConfig, clean_optional, default_hosts, load_config_file,
-    normalize_hosts, parse_hosts, write_default_config,
+    normalize_hosts, parse_hosts, validate_ssh_destination, validate_ssh_destinations,
+    write_default_config,
 };
 use editor::{
     ConfigDraft, ConfigEditor, handle_config_input, handle_config_key, open_config_editor,
@@ -143,6 +144,7 @@ fn main() -> Result<()> {
             Ok(())
         }
         Commands::Bench { host, seconds } => {
+            validate_ssh_destination("bench host", &host)?;
             let output = run_bench(&host, seconds)?;
             println!("{output}");
             Ok(())
@@ -183,17 +185,20 @@ fn resolve_config(cli: &Cli) -> Result<ResolvedConfig> {
     if hosts.is_empty() {
         return Err(anyhow!("host list is empty"));
     }
+    validate_ssh_destinations("host", &hosts)?;
 
     let client_hosts = profile
         .and_then(|profile| profile.client_hosts.clone())
         .map(|hosts| normalize_hosts(hosts.iter().map(String::as_str)))
         .unwrap_or_default();
+    validate_ssh_destinations("client_host", &client_hosts)?;
 
     let admin_host = cli
         .admin_host
         .clone()
         .or_else(|| profile.map(|profile| profile.admin_host.clone()))
         .unwrap_or_else(|| hosts[0].clone());
+    validate_ssh_destination("admin_host", &admin_host)?;
 
     let refresh_secs = cli
         .refresh_secs

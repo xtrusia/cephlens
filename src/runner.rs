@@ -67,6 +67,7 @@ fn cleanup_trace_runner_on_host(host: String, session: String) -> CleanupResult 
             "-o",
             "ServerAliveCountMax=2",
         ])
+        .arg("--")
         .arg(&host)
         .arg(remote)
         .output()
