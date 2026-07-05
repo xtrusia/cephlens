@@ -33,9 +33,9 @@ mod util;
 
 use app::{
     App, EVENT_LOG_DEFAULT_HEIGHT, EVENT_LOG_MIN_HEIGHT, EVENT_LOG_RESERVED_ROWS, Mode, PanelFocus,
-    TraceSource, drain_worker_messages, replay_move, request_quit, shutdown_streams, spawn_probe,
-    spawn_trace_install, spawn_trace_probe, spawn_trace_run, start_live_streams, toggle_kfstrace,
-    toggle_radostrace, toggle_trace,
+    TraceAction, TraceSource, any_source_running, drain_worker_messages, execute_trace_action,
+    replay_move, request_quit, shutdown_streams, source_running, spawn_probe, spawn_trace_install,
+    spawn_trace_probe, spawn_trace_run, start_live_streams,
 };
 use collect::{collect_snapshot, run_bench, run_probe};
 use config::{
@@ -258,6 +258,7 @@ fn run_live_tui(config_path: PathBuf, cfg: ResolvedConfig) -> Result<()> {
         confirm_quit: false,
         shutting_down: false,
         trace_probing: false,
+        pending_trace_action: None,
         tx,
         rx,
         logs: Vec::new(),
@@ -344,6 +345,7 @@ fn run_replay_tui(file: PathBuf) -> Result<()> {
         confirm_quit: false,
         shutting_down: false,
         trace_probing: false,
+        pending_trace_action: None,
         tx,
         rx,
         logs: vec![format!("replay loaded from {}", file.display())],
@@ -460,6 +462,11 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Result<bool> {
         return Ok(false);
     }
 
+    if app.pending_trace_action.is_some() {
+        handle_trace_confirm(app, key);
+        return Ok(false);
+    }
+
     if matches!(app.mode, Mode::Config) && app.config_editor.input.is_some() {
         handle_config_input(app, key);
         return Ok(false);
@@ -489,25 +496,23 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Result<bool> {
                 Ok(false)
             }
             KeyCode::Char('t') => {
-                app.trace_source = TraceSource::Osdtrace;
-                let latency_ms = app.trace_latency_ms.max(1);
-                toggle_trace(app, latency_ms);
-                Ok(false)
-            }
-            KeyCode::Char('0') => {
-                app.trace_source = TraceSource::Osdtrace;
-                spawn_trace_run(app, 0);
+                request_source(app, TraceSource::Osdtrace);
                 Ok(false)
             }
             KeyCode::Char('f') => {
-                app.trace_source = TraceSource::Kfstrace;
-                let latency_us = app.trace_latency_ms.saturating_mul(1000);
-                toggle_kfstrace(app, latency_us);
+                request_source(app, TraceSource::Kfstrace);
                 Ok(false)
             }
             KeyCode::Char('r') => {
-                app.trace_source = TraceSource::Radostrace;
-                toggle_radostrace(app);
+                request_source(app, TraceSource::Radostrace);
+                Ok(false)
+            }
+            KeyCode::Char('a') => {
+                app.pending_trace_action = Some(if any_source_running(app) {
+                    TraceAction::StopAll
+                } else {
+                    TraceAction::StartAll
+                });
                 Ok(false)
             }
             KeyCode::Char('i') => {
@@ -692,5 +697,30 @@ fn handle_quit_confirm(app: &mut App, key: KeyEvent) -> bool {
             false
         }
         _ => false,
+    }
+}
+
+fn request_source(app: &mut App, source: TraceSource) {
+    if app.trace_source != source {
+        // switch the panel to this source first; do not start/stop yet
+        app.trace_source = source;
+    } else if source_running(app, source) {
+        app.pending_trace_action = Some(TraceAction::Stop(source));
+    } else {
+        app.pending_trace_action = Some(TraceAction::Start(source));
+    }
+}
+
+fn handle_trace_confirm(app: &mut App, key: KeyEvent) {
+    match key.code {
+        KeyCode::Enter | KeyCode::Char('y') | KeyCode::Char('Y') => {
+            if let Some(action) = app.pending_trace_action.take() {
+                execute_trace_action(app, action);
+            }
+        }
+        KeyCode::Esc | KeyCode::Char('n') | KeyCode::Char('N') => {
+            app.pending_trace_action = None;
+        }
+        _ => {}
     }
 }

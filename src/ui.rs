@@ -10,7 +10,7 @@ use ratatui::{
 
 use crate::app::{
     App, EVENT_LOG_MIN_HEIGHT, EVENT_LOG_RESERVED_ROWS, Mode, PanelFocus, StreamState,
-    StreamStatus, TraceSource, live_streams_active,
+    StreamStatus, TraceAction, TraceSource, live_streams_active,
 };
 use crate::editor::ConfigDraft;
 use crate::kfstrace::kfs_op_rows;
@@ -62,6 +62,9 @@ pub(crate) fn draw(frame: &mut Frame<'_>, app: &App) {
     if app.show_help {
         draw_help_overlay(frame, app, area);
     }
+    if app.pending_trace_action.is_some() {
+        draw_trace_confirm(frame, app, area);
+    }
     if app.confirm_quit {
         draw_quit_confirm(frame, app, area);
     }
@@ -94,6 +97,41 @@ fn draw_quit_confirm(frame: &mut Frame<'_>, app: &App, area: Rect) {
             Span::styled("Enter/y", Style::default().fg(WARN).bold()),
             Span::raw(" quit    "),
             Span::styled("Esc/n/q", Style::default().fg(WARN).bold()),
+            Span::raw(" cancel"),
+        ]),
+    ];
+    frame.render_widget(Clear, modal);
+    frame.render_widget(
+        Paragraph::new(lines)
+            .style(Style::default().fg(TEXT))
+            .block(panel(" confirm ")),
+        modal,
+    );
+}
+
+fn draw_trace_confirm(frame: &mut Frame<'_>, app: &App, area: Rect) {
+    let Some(action) = app.pending_trace_action else {
+        return;
+    };
+    let (verb, what) = match action {
+        TraceAction::Start(source) => ("Start", source.label()),
+        TraceAction::Stop(source) => ("Stop", source.label()),
+        TraceAction::StartAll => ("Start", "all trace sources"),
+        TraceAction::StopAll => ("Stop", "all trace sources"),
+    };
+    let modal = centered_rect(58, 7, area);
+    let lines = vec![
+        Line::styled(format!("{verb} {what}?"), Style::default().fg(WARN).bold()),
+        Line::raw(""),
+        Line::styled(
+            "starts/stops eBPF tracers via sudo on remote hosts",
+            Style::default().fg(MUTED),
+        ),
+        Line::raw(""),
+        Line::from(vec![
+            Span::styled("Enter/y", Style::default().fg(WARN).bold()),
+            Span::raw(" yes    "),
+            Span::styled("Esc/n", Style::default().fg(WARN).bold()),
             Span::raw(" cancel"),
         ]),
     ];
@@ -396,7 +434,7 @@ fn footer_commands(app: &App) -> Vec<(&'static str, &'static str)> {
             ("t", "osd"),
             ("f", "kfs"),
             ("r", "rados"),
-            ("0", "all"),
+            ("a", "all"),
             ("c", "config"),
             ("Tab", "panel"),
             ("?", "more"),
@@ -425,10 +463,11 @@ fn help_commands(app: &App) -> Vec<(&'static str, &'static str)> {
             ("c", "edit config"),
             ("p", "probe node + osdtrace readiness"),
             ("i", "install osdtrace"),
-            ("t", "toggle osdtrace (>=1ms)"),
-            ("f", "toggle kfstrace (CephFS MDS)"),
-            ("r", "toggle radostrace (RADOS client)"),
-            ("0", "osdtrace all observed ops"),
+            (
+                "t / f / r",
+                "view osd / kfs / rados; press again to start/stop",
+            ),
+            ("a", "start or stop all trace sources"),
             ("x", "clear captured trace"),
             ("Tab / Shift+Tab", "focus next / prev panel"),
             ("Up/Dn j/k", "scroll focused panel"),
@@ -584,23 +623,32 @@ fn operator_insights(app: &App) -> Vec<Insight> {
         });
     }
 
-    let rows = trace_graph_rows(app, usize::MAX);
-    let active_rows = rows.iter().filter(|row| row.ops > 0).collect::<Vec<_>>();
-    let trace_active = app.trace_following || app.trace_active > 0;
-
-    if active_rows.is_empty() {
+    let osd_rows = trace_graph_rows(app, usize::MAX);
+    let active_rows = osd_rows
+        .iter()
+        .filter(|row| row.ops > 0)
+        .collect::<Vec<_>>();
+    if !active_rows.is_empty() {
+        insights.extend(osd_trace_insights(app, &active_rows));
+    }
+    insights.extend(kfs_insights(app));
+    insights.extend(rados_insights(app));
+    if let Some(cross) = cross_source_insight(app, &active_rows) {
+        insights.push(cross);
+    }
+    if active_rows.is_empty() && app.kfstrace_events.is_empty() && app.radostrace_events.is_empty()
+    {
         insights.push(Insight {
             level: InsightLevel::Info,
-            text: if trace_active {
-                "trace listening; no OSD ops observed yet. Generate Ceph IO or press 0 for all ops"
-                    .to_owned()
-            } else {
-                "trace idle; press t for >=1ms ops or 0 for all observed ops".to_owned()
-            },
+            text: "no trace data; press t/f/r to start osd/kfs/rados, a for all".to_owned(),
         });
-        return insights;
     }
 
+    insights
+}
+
+fn osd_trace_insights(app: &App, active_rows: &[&TraceGraphRow]) -> Vec<Insight> {
+    let mut insights = Vec::new();
     let total_ops = active_rows.iter().map(|row| row.ops).sum::<u64>();
     let worst = active_rows
         .iter()
@@ -693,6 +741,81 @@ fn operator_insights(app: &App) -> Vec<Insight> {
     }
 
     insights
+}
+
+fn kfs_insights(app: &App) -> Vec<Insight> {
+    let mut insights = Vec::new();
+    let rows = kfs_op_rows(&app.kfstrace_events);
+    let Some(worst) = rows.iter().max_by_key(|row| row.max_us) else {
+        return insights;
+    };
+    let total: u64 = rows.iter().map(|row| row.count).sum();
+    insights.push(Insight {
+        level: insight_level_for_latency(worst.max_us),
+        text: format!(
+            "kfstrace: {total} MDS ops; slowest {} max {} avg {}",
+            worst.op,
+            format_latency_us(worst.max_us),
+            format_latency_us(worst.avg_us)
+        ),
+    });
+    let unsafe_total: u64 = rows.iter().map(|row| row.unsafe_count).sum();
+    if unsafe_total > 0 {
+        insights.push(Insight {
+            level: InsightLevel::Warn,
+            text: format!(
+                "kfstrace: {unsafe_total} unsafe metadata ops awaiting MDS journal commit"
+            ),
+        });
+    }
+    insights
+}
+
+fn rados_insights(app: &App) -> Vec<Insight> {
+    let mut insights = Vec::new();
+    let rows = rados_pool_rows(&app.radostrace_events);
+    let Some(worst) = rows.iter().max_by_key(|row| row.max_us) else {
+        return insights;
+    };
+    let total: u64 = rows.iter().map(|row| row.count).sum();
+    insights.push(Insight {
+        level: insight_level_for_latency(worst.max_us),
+        text: format!(
+            "radostrace: {total} client ops; pool {} max {} avg {} ({}W/{}R)",
+            worst.pool,
+            format_latency_us(worst.max_us),
+            format_latency_us(worst.avg_us),
+            worst.writes,
+            worst.reads
+        ),
+    });
+    insights
+}
+
+fn cross_source_insight(app: &App, osd_active: &[&TraceGraphRow]) -> Option<Insight> {
+    let rados = rados_pool_rows(&app.radostrace_events);
+    let client_max = rados.iter().map(|row| row.max_us).max().unwrap_or(0);
+    let server_max = osd_active.iter().map(|row| row.max_us).max().unwrap_or(0);
+    if client_max == 0 || server_max == 0 {
+        return None;
+    }
+    let client = format_latency_us(client_max);
+    let server = format_latency_us(server_max);
+    if client_max > server_max.saturating_mul(2) {
+        Some(Insight {
+            level: InsightLevel::Warn,
+            text: format!(
+                "cross: rados client {client} vs osd server {server}; gap = network/messenger/queue"
+            ),
+        })
+    } else {
+        Some(Insight {
+            level: InsightLevel::Info,
+            text: format!(
+                "cross: rados client {client} vs osd server {server}; client tracks server"
+            ),
+        })
+    }
 }
 
 fn insight_level_for_latency(latency_us: u64) -> InsightLevel {

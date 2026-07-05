@@ -120,6 +120,24 @@ pub(crate) enum TraceSource {
     Radostrace,
 }
 
+impl TraceSource {
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            TraceSource::Osdtrace => "osdtrace",
+            TraceSource::Kfstrace => "kfstrace",
+            TraceSource::Radostrace => "radostrace",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum TraceAction {
+    Start(TraceSource),
+    Stop(TraceSource),
+    StartAll,
+    StopAll,
+}
+
 pub(crate) struct App {
     pub(crate) profile: String,
     pub(crate) hosts: Vec<String>,
@@ -133,6 +151,7 @@ pub(crate) struct App {
     pub(crate) confirm_quit: bool,
     pub(crate) shutting_down: bool,
     pub(crate) trace_probing: bool,
+    pub(crate) pending_trace_action: Option<TraceAction>,
     pub(crate) tx: Sender<WorkerMsg>,
     pub(crate) rx: Receiver<WorkerMsg>,
     pub(crate) logs: Vec<String>,
@@ -705,19 +724,53 @@ pub(crate) fn stop_trace_follow(app: &mut App) {
     }
 }
 
-pub(crate) fn toggle_trace(app: &mut App, latency_ms: u64) {
-    if app.trace_active > 0 || app.trace_following {
-        stop_trace_follow(app);
-    } else {
-        spawn_trace_run(app, latency_ms);
+pub(crate) fn source_running(app: &App, source: TraceSource) -> bool {
+    match source {
+        TraceSource::Osdtrace => app.trace_active > 0 || app.trace_following,
+        TraceSource::Kfstrace => app.kfstrace_active > 0,
+        TraceSource::Radostrace => app.radostrace_active > 0,
     }
 }
 
-pub(crate) fn toggle_kfstrace(app: &mut App, latency_us: u64) {
-    if app.kfstrace_active > 0 {
-        stop_kfstrace(app);
-    } else {
-        spawn_kfstrace_run(app, latency_us);
+pub(crate) fn any_source_running(app: &App) -> bool {
+    source_running(app, TraceSource::Osdtrace)
+        || source_running(app, TraceSource::Kfstrace)
+        || source_running(app, TraceSource::Radostrace)
+}
+
+fn start_source(app: &mut App, source: TraceSource) {
+    match source {
+        TraceSource::Osdtrace => spawn_trace_run(app, app.trace_latency_ms),
+        TraceSource::Kfstrace => spawn_kfstrace_run(app, app.trace_latency_ms.saturating_mul(1000)),
+        TraceSource::Radostrace => spawn_radostrace_run(app),
+    }
+}
+
+fn stop_source(app: &mut App, source: TraceSource) {
+    match source {
+        TraceSource::Osdtrace => stop_trace_follow(app),
+        TraceSource::Kfstrace => stop_kfstrace(app),
+        TraceSource::Radostrace => stop_radostrace(app),
+    }
+}
+
+pub(crate) fn execute_trace_action(app: &mut App, action: TraceAction) {
+    match action {
+        TraceAction::Start(source) => {
+            start_source(app, source);
+            app.trace_source = source;
+        }
+        TraceAction::Stop(source) => stop_source(app, source),
+        TraceAction::StartAll => {
+            start_source(app, TraceSource::Osdtrace);
+            start_source(app, TraceSource::Kfstrace);
+            start_source(app, TraceSource::Radostrace);
+        }
+        TraceAction::StopAll => {
+            stop_source(app, TraceSource::Osdtrace);
+            stop_source(app, TraceSource::Kfstrace);
+            stop_source(app, TraceSource::Radostrace);
+        }
     }
 }
 
@@ -854,14 +907,6 @@ fn spawn_kfstrace_runner(
             message: "kfstrace exited".to_owned(),
         });
     });
-}
-
-pub(crate) fn toggle_radostrace(app: &mut App) {
-    if app.radostrace_active > 0 {
-        stop_radostrace(app);
-    } else {
-        spawn_radostrace_run(app);
-    }
 }
 
 pub(crate) fn spawn_radostrace_run(app: &mut App) {
