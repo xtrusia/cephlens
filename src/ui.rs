@@ -66,6 +66,9 @@ pub(crate) fn draw(frame: &mut Frame<'_>, app: &App) {
     if app.confirm_quit {
         draw_quit_confirm(frame, app, area);
     }
+    if app.shutting_down {
+        draw_shutdown(frame, app, area);
+    }
 }
 
 fn event_log_height_for(area: Rect, preferred: u16) -> u16 {
@@ -100,6 +103,27 @@ fn draw_quit_confirm(frame: &mut Frame<'_>, app: &App, area: Rect) {
         Paragraph::new(lines)
             .style(Style::default().fg(TEXT))
             .block(panel(" confirm ")),
+        modal,
+    );
+}
+
+fn draw_shutdown(frame: &mut Frame<'_>, app: &App, area: Rect) {
+    let note = if app.trace_following || app.trace_active > 0 {
+        "Stopping trace runners and cleaning up remote hosts..."
+    } else {
+        "Closing SSH streams..."
+    };
+    let modal = centered_rect(58, 5, area);
+    let lines = vec![
+        Line::styled("Shutting down", Style::default().fg(WARN).bold()),
+        Line::raw(""),
+        Line::styled(note, Style::default().fg(TEXT)),
+    ];
+    frame.render_widget(Clear, modal);
+    frame.render_widget(
+        Paragraph::new(lines)
+            .style(Style::default().fg(TEXT))
+            .block(panel(" cleaning up ")),
         modal,
     );
 }
@@ -152,8 +176,6 @@ fn draw_header(frame: &mut Frame<'_>, app: &App, area: Rect) {
         } else {
             format!("reconnecting {live}/{total}")
         }
-    } else if app.collecting {
-        "collecting".to_owned()
     } else {
         "idle".to_owned()
     };
@@ -468,7 +490,6 @@ fn footer_commands(app: &App) -> Vec<(&'static str, &'static str)> {
         Mode::Live => vec![
             ("t", "trace"),
             ("0", "all"),
-            ("r", "refresh"),
             ("c", "config"),
             ("Tab", "panel"),
             ("?", "more"),
@@ -502,7 +523,6 @@ fn footer_commands(app: &App) -> Vec<(&'static str, &'static str)> {
 fn help_commands(app: &App) -> Vec<(&'static str, &'static str)> {
     match app.mode {
         Mode::Live => vec![
-            ("r", "one-shot refresh"),
             ("c", "edit config"),
             ("p", "probe readiness"),
             ("i", "install osdtrace"),

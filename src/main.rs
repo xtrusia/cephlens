@@ -32,8 +32,7 @@ mod util;
 use app::{
     App, EVENT_LOG_DEFAULT_HEIGHT, EVENT_LOG_MIN_HEIGHT, EVENT_LOG_RESERVED_ROWS, Mode, PanelFocus,
     drain_worker_messages, replay_move, request_quit, shutdown_streams, spawn_probe,
-    spawn_snapshot, spawn_trace_install, spawn_trace_probe, spawn_trace_run, start_live_streams,
-    toggle_trace,
+    spawn_trace_install, spawn_trace_probe, spawn_trace_run, start_live_streams, toggle_trace,
 };
 use collect::{collect_snapshot, run_bench, run_probe};
 use config::{
@@ -246,8 +245,8 @@ fn run_live_tui(config_path: PathBuf, cfg: ResolvedConfig) -> Result<()> {
         refresh: Duration::from_secs(cfg.refresh_secs),
         mode: Mode::Live,
         snapshot: None,
-        collecting: false,
         confirm_quit: false,
+        shutting_down: false,
         tx,
         rx,
         logs: Vec::new(),
@@ -323,8 +322,8 @@ fn run_replay_tui(file: PathBuf) -> Result<()> {
         refresh: Duration::from_secs(0),
         mode: Mode::Replay { index, snapshots },
         snapshot,
-        collecting: false,
         confirm_quit: false,
+        shutting_down: false,
         tx,
         rx,
         logs: vec![format!("replay loaded from {}", file.display())],
@@ -383,6 +382,15 @@ where
     result.map(|_| ())
 }
 
+fn begin_shutdown(
+    terminal: &mut Terminal<CrosstermBackend<Stdout>>,
+    app: &mut App,
+) -> Result<Vec<CleanupResult>> {
+    app.shutting_down = true;
+    let _ = terminal.draw(|frame| ui::draw(frame, app));
+    Ok(shutdown_streams(app, true))
+}
+
 fn run_app(
     terminal: &mut Terminal<CrosstermBackend<Stdout>>,
     mut app: App,
@@ -401,11 +409,11 @@ fn run_app(
                     if key.code == KeyCode::Char('c')
                         && key.modifiers.contains(KeyModifiers::CONTROL)
                     {
-                        return Ok(shutdown_streams(&app, true));
+                        return begin_shutdown(terminal, &mut app);
                     }
 
                     if handle_key(&mut app, key)? {
-                        return Ok(shutdown_streams(&app, true));
+                        return begin_shutdown(terminal, &mut app);
                     }
                 }
                 Event::Resize(_, _) => {
@@ -444,10 +452,6 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Result<bool> {
         Mode::Live => match key.code {
             KeyCode::Char('q') | KeyCode::Esc => {
                 request_quit(app);
-                Ok(false)
-            }
-            KeyCode::Char('r') => {
-                spawn_snapshot(app);
                 Ok(false)
             }
             KeyCode::Char('p') => {

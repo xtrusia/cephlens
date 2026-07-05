@@ -483,7 +483,6 @@ fn persist_and_apply_config(app: &mut App) {
             app.stream_statuses.clear();
             app.node_summaries.clear();
             app.snapshot = None;
-            app.collecting = false;
             start_live_streams(app);
         }
     }

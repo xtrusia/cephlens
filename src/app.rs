@@ -17,8 +17,7 @@ use chrono::{DateTime, Local, Utc};
 use serde_json::Value;
 
 use crate::{
-    collect::{collect_snapshot, parse_cluster_summary, parse_osds, run_probe},
-    config::ResolvedConfig,
+    collect::{parse_cluster_summary, parse_osds, run_probe},
     editor::ConfigEditor,
     model::{NodeSummary, Snapshot},
     runner::{
@@ -43,7 +42,6 @@ const SESSION_SNAPSHOT_LIMIT: usize = 10_000;
 
 #[derive(Clone, Debug)]
 pub(crate) enum WorkerMsg {
-    Snapshot(Box<Result<Snapshot, String>>),
     Probe(String),
     Stream(StreamMsg),
     TraceProbe(Vec<TraceTarget>),
@@ -120,8 +118,8 @@ pub(crate) struct App {
     pub(crate) refresh: Duration,
     pub(crate) mode: Mode,
     pub(crate) snapshot: Option<Snapshot>,
-    pub(crate) collecting: bool,
     pub(crate) confirm_quit: bool,
+    pub(crate) shutting_down: bool,
     pub(crate) tx: Sender<WorkerMsg>,
     pub(crate) rx: Receiver<WorkerMsg>,
     pub(crate) logs: Vec<String>,
@@ -340,23 +338,6 @@ fn sleep_with_stop(stop: &AtomicBool, duration: Duration) {
 pub(crate) fn drain_worker_messages(app: &mut App) {
     while let Ok(msg) = app.rx.try_recv() {
         match msg {
-            WorkerMsg::Snapshot(result) => {
-                app.collecting = false;
-                match *result {
-                    Ok(snapshot) => {
-                        record_session_snapshot(app, &snapshot);
-                        app.log(format!(
-                            "snapshot ok: {} {} osds {}/{} up/in",
-                            snapshot.cluster.health,
-                            snapshot.cluster.pg_states,
-                            snapshot.cluster.osds_up,
-                            snapshot.cluster.osds_in
-                        ));
-                        app.snapshot = Some(snapshot);
-                    }
-                    Err(err) => app.log(format!("snapshot failed: {err}")),
-                }
-            }
             WorkerMsg::Probe(output) => {
                 for line in output.lines() {
                     app.log(line.to_owned());
@@ -562,30 +543,6 @@ fn set_stream_state(app: &mut App, id: &str, state: StreamState, detail: impl In
     if changed {
         app.log(format!("{id} {state:?}: {detail}"));
     }
-}
-
-pub(crate) fn spawn_snapshot(app: &mut App) {
-    if app.collecting {
-        return;
-    }
-    app.collecting = true;
-    app.log("snapshot requested");
-    let tx = app.tx.clone();
-    let cfg = ResolvedConfig {
-        profile: app.profile.clone(),
-        admin_host: app.admin_host.clone(),
-        hosts: app.hosts.clone(),
-        refresh_secs: app.refresh.as_secs().max(1),
-        trace_auto_start: app.trace_auto_start,
-        trace_window_secs: app.trace_window_secs,
-        trace_latency_ms: app.trace_latency_ms,
-        trace_ttl_secs: app.trace_ttl_secs,
-        trace_install: app.trace_install.clone(),
-    };
-    thread::spawn(move || {
-        let result = collect_snapshot(&cfg).map_err(|err| format!("{err:#}"));
-        let _ = tx.send(WorkerMsg::Snapshot(Box::new(result)));
-    });
 }
 
 pub(crate) fn spawn_probe(app: &mut App) {
