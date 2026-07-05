@@ -33,6 +33,8 @@ pub(crate) struct ConfigFile {
 pub(crate) struct ClusterProfile {
     pub(crate) admin_host: String,
     pub(crate) hosts: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) client_hosts: Option<Vec<String>>,
     pub(crate) refresh_secs: Option<u64>,
     pub(crate) trace_auto_start: Option<bool>,
     pub(crate) trace_window_secs: Option<u64>,
@@ -48,6 +50,7 @@ pub(crate) struct ResolvedConfig {
     pub(crate) profile: String,
     pub(crate) admin_host: String,
     pub(crate) hosts: Vec<String>,
+    pub(crate) client_hosts: Vec<String>,
     pub(crate) refresh_secs: u64,
     pub(crate) trace_auto_start: bool,
     pub(crate) trace_window_secs: u64,

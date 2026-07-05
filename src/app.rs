@@ -19,6 +19,7 @@ use serde_json::Value;
 use crate::{
     collect::{parse_cluster_summary, parse_osds, run_probe},
     editor::ConfigEditor,
+    kfstrace::{KfsEvent, parse_kfs_event},
     model::{NodeSummary, Snapshot},
     runner::{
         CleanupResult, cleanup_trace_runners_async, cleanup_trace_runners_wait, install_trace_host,
@@ -48,6 +49,8 @@ pub(crate) enum WorkerMsg {
     TraceInstall(Vec<TraceTarget>),
     TraceLine { host: String, line: String },
     TraceDone { host: String, message: String },
+    KfsLine { host: String, line: String },
+    KfsDone { host: String, message: String },
 }
 
 #[derive(Clone, Debug)]
@@ -107,9 +110,16 @@ pub(crate) enum PanelFocus {
     Logs,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TraceSource {
+    Osdtrace,
+    Kfstrace,
+}
+
 pub(crate) struct App {
     pub(crate) profile: String,
     pub(crate) hosts: Vec<String>,
+    pub(crate) client_hosts: Vec<String>,
     pub(crate) admin_host: String,
     pub(crate) config_path: Option<PathBuf>,
     pub(crate) config_editor: ConfigEditor,
@@ -139,6 +149,10 @@ pub(crate) struct App {
     pub(crate) trace_active: usize,
     pub(crate) trace_following: bool,
     pub(crate) trace_session: Option<String>,
+    pub(crate) trace_source: TraceSource,
+    pub(crate) kfstrace_events: Vec<KfsEvent>,
+    pub(crate) kfstrace_active: usize,
+    pub(crate) kfstrace_stop: Arc<AtomicBool>,
     pub(crate) trace_auto_start: bool,
     pub(crate) trace_window_secs: u64,
     pub(crate) trace_latency_ms: u64,
@@ -191,6 +205,7 @@ pub(crate) fn start_live_streams(app: &mut App) {
 
 pub(crate) fn shutdown_streams(app: &App, wait_for_cleanup: bool) -> Vec<CleanupResult> {
     app.trace_stop.store(true, Ordering::SeqCst);
+    app.kfstrace_stop.store(true, Ordering::SeqCst);
     if live_streams_active(app) {
         app.stream_stop.store(true, Ordering::SeqCst);
     }
@@ -398,6 +413,23 @@ pub(crate) fn drain_worker_messages(app: &mut App) {
                     app.trace_following = false;
                     app.trace_session = None;
                 }
+            }
+            WorkerMsg::KfsLine { host, line } => {
+                let trimmed = line.trim();
+                if let Some(err) = trimmed.strip_prefix("__CEPHLENS_KFS_ERROR__") {
+                    app.log(format!("kfstrace {host}: {}", err.trim()));
+                    continue;
+                }
+                if let Some(event) = parse_kfs_event(trimmed) {
+                    app.kfstrace_events.push(event);
+                    if app.kfstrace_events.len() > 500 {
+                        app.kfstrace_events.drain(0..100);
+                    }
+                }
+            }
+            WorkerMsg::KfsDone { host, message } => {
+                app.kfstrace_active = app.kfstrace_active.saturating_sub(1);
+                app.log(format!("kfstrace {host}: {message}"));
             }
         }
     }
@@ -654,6 +686,149 @@ pub(crate) fn toggle_trace(app: &mut App, latency_ms: u64) {
     } else {
         spawn_trace_run(app, latency_ms);
     }
+}
+
+pub(crate) fn toggle_kfstrace(app: &mut App, latency_us: u64) {
+    if app.kfstrace_active > 0 {
+        stop_kfstrace(app);
+    } else {
+        spawn_kfstrace_run(app, latency_us);
+    }
+}
+
+pub(crate) fn spawn_kfstrace_run(app: &mut App, latency_us: u64) {
+    if app.kfstrace_active > 0 {
+        return;
+    }
+    if app.client_hosts.is_empty() {
+        app.log("kfstrace skipped: no client_hosts configured");
+        return;
+    }
+    app.kfstrace_events.clear();
+    app.kfstrace_stop.store(true, Ordering::SeqCst);
+    app.kfstrace_stop = Arc::new(AtomicBool::new(false));
+    app.kfstrace_active = app.client_hosts.len();
+    let ttl_secs = app.trace_ttl_secs.max(1);
+    app.log(format!(
+        "starting kfstrace on {} client hosts: ttl={ttl_secs}s latency>={latency_us}us",
+        app.client_hosts.len()
+    ));
+    for host in app.client_hosts.clone() {
+        spawn_kfstrace_runner(
+            host,
+            app.tx.clone(),
+            latency_us,
+            ttl_secs,
+            app.kfstrace_stop.clone(),
+        );
+    }
+}
+
+pub(crate) fn stop_kfstrace(app: &mut App) {
+    app.kfstrace_stop.store(true, Ordering::SeqCst);
+    app.log("kfstrace stopping");
+}
+
+fn kfstrace_run_command(latency_us: u64, ttl_secs: u64) -> String {
+    format!(
+        r#"
+bin=$(command -v kfstrace 2>/dev/null || true)
+if [ -z "$bin" ] && [ -x "$HOME/.cephlens/bin/kfstrace" ]; then
+  bin="$HOME/.cephlens/bin/kfstrace"
+fi
+if [ -z "$bin" ]; then
+  echo "__CEPHLENS_KFS_ERROR__ kfstrace missing"
+  exit 127
+fi
+if ! sudo -n true 2>/dev/null; then
+  echo "__CEPHLENS_KFS_ERROR__ sudo -n unavailable"
+  exit 126
+fi
+exec sudo -n "$bin" -m mds -l {latency_us} -t {ttl_secs} 2>&1
+"#
+    )
+}
+
+fn spawn_kfstrace_runner(
+    host: String,
+    tx: Sender<WorkerMsg>,
+    latency_us: u64,
+    ttl_secs: u64,
+    stop: Arc<AtomicBool>,
+) {
+    thread::spawn(move || {
+        let command = kfstrace_run_command(latency_us, ttl_secs);
+        let remote = format!("sh -c {}", shell_quote(&command));
+        let child_result = ProcessCommand::new("ssh")
+            .args([
+                "-o",
+                "BatchMode=yes",
+                "-o",
+                "ConnectTimeout=8",
+                "-o",
+                "ServerAliveInterval=5",
+                "-o",
+                "ServerAliveCountMax=2",
+            ])
+            .arg(&host)
+            .arg(remote)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn();
+
+        let mut child = match child_result {
+            Ok(child) => child,
+            Err(err) => {
+                let _ = tx.send(WorkerMsg::KfsDone {
+                    host,
+                    message: format!("failed to start ssh: {err}"),
+                });
+                return;
+            }
+        };
+
+        if let Some(stderr) = child.stderr.take() {
+            let err_tx = tx.clone();
+            let err_host = host.clone();
+            thread::spawn(move || {
+                let reader = BufReader::new(stderr);
+                for line in reader.lines().map_while(Result::ok) {
+                    if !line.trim().is_empty() {
+                        let _ = err_tx.send(WorkerMsg::KfsLine {
+                            host: err_host.clone(),
+                            line,
+                        });
+                    }
+                }
+            });
+        }
+
+        if let Some(stdout) = child.stdout.take() {
+            let reader = BufReader::new(stdout);
+            for line in reader.lines() {
+                if stop.load(Ordering::SeqCst) {
+                    let _ = child.kill();
+                    break;
+                }
+                match line {
+                    Ok(payload) if !payload.trim().is_empty() => {
+                        let _ = tx.send(WorkerMsg::KfsLine {
+                            host: host.clone(),
+                            line: payload,
+                        });
+                    }
+                    Ok(_) => {}
+                    Err(_) => break,
+                }
+            }
+        }
+        let _ = child.wait();
+        let _ = tx.send(WorkerMsg::KfsDone {
+            host,
+            message: "kfstrace exited".to_owned(),
+        });
+    });
 }
 
 fn trace_session_id() -> String {

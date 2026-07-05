@@ -20,6 +20,7 @@ pub(crate) struct ConfigDraft {
     pub(crate) profile: String,
     pub(crate) admin_host: String,
     pub(crate) hosts: Vec<String>,
+    pub(crate) client_hosts: Vec<String>,
     pub(crate) refresh_secs: u64,
     pub(crate) trace_auto_start: bool,
     pub(crate) trace_window_secs: u64,
@@ -81,6 +82,7 @@ impl ConfigDraft {
             profile: cfg.profile.clone(),
             admin_host: cfg.admin_host.clone(),
             hosts: cfg.hosts.clone(),
+            client_hosts: cfg.client_hosts.clone(),
             refresh_secs: cfg.refresh_secs.max(1),
             trace_auto_start: cfg.trace_auto_start,
             trace_window_secs: cfg.trace_window_secs.max(1),
@@ -97,6 +99,7 @@ impl ConfigDraft {
             profile: app.profile.clone(),
             admin_host: app.admin_host.clone(),
             hosts: app.hosts.clone(),
+            client_hosts: app.client_hosts.clone(),
             refresh_secs: app.refresh.as_secs().max(1),
             trace_auto_start: app.trace_auto_start,
             trace_window_secs: app.trace_window_secs.max(1),
@@ -464,6 +467,7 @@ fn persist_and_apply_config(app: &mut App) {
         app.profile = draft.profile.clone();
         app.admin_host = draft.admin_host.clone();
         app.hosts = draft.hosts.clone();
+        app.client_hosts = draft.client_hosts.clone();
         app.refresh = Duration::from_secs(draft.refresh_secs.max(1));
         app.trace_auto_start = draft.trace_auto_start;
         app.trace_window_secs = draft.trace_window_secs.max(1);
@@ -512,6 +516,11 @@ fn save_profile_config(path: &Path, draft: &ConfigDraft) -> Result<()> {
         ClusterProfile {
             admin_host: draft.admin_host.clone(),
             hosts: draft.hosts.clone(),
+            client_hosts: if draft.client_hosts.is_empty() {
+                None
+            } else {
+                Some(draft.client_hosts.clone())
+            },
             refresh_secs: Some(draft.refresh_secs.max(1)),
             trace_auto_start: Some(draft.trace_auto_start),
             trace_window_secs: Some(draft.trace_window_secs.max(1)),
@@ -577,6 +586,7 @@ mod tests {
             profile: "test".to_owned(),
             admin_host: "a".to_owned(),
             hosts: vec!["a".to_owned(), "b".to_owned()],
+            client_hosts: Vec::new(),
             refresh_secs: 1,
             trace_auto_start: false,
             trace_window_secs: 10,

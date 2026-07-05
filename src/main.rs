@@ -20,6 +20,7 @@ mod app;
 mod collect;
 mod config;
 mod editor;
+mod kfstrace;
 mod model;
 mod runner;
 mod session;
@@ -31,13 +32,14 @@ mod util;
 
 use app::{
     App, EVENT_LOG_DEFAULT_HEIGHT, EVENT_LOG_MIN_HEIGHT, EVENT_LOG_RESERVED_ROWS, Mode, PanelFocus,
-    drain_worker_messages, replay_move, request_quit, shutdown_streams, spawn_probe,
-    spawn_trace_install, spawn_trace_probe, spawn_trace_run, start_live_streams, toggle_trace,
+    TraceSource, drain_worker_messages, replay_move, request_quit, shutdown_streams, spawn_probe,
+    spawn_trace_install, spawn_trace_probe, spawn_trace_run, start_live_streams, toggle_kfstrace,
+    toggle_trace,
 };
 use collect::{collect_snapshot, run_bench, run_probe};
 use config::{
     DEFAULT_TRACE_TTL_SECS, ResolvedConfig, clean_optional, default_hosts, load_config_file,
-    parse_hosts, write_default_config,
+    normalize_hosts, parse_hosts, write_default_config,
 };
 use editor::{
     ConfigDraft, ConfigEditor, handle_config_input, handle_config_key, open_config_editor,
@@ -181,6 +183,11 @@ fn resolve_config(cli: &Cli) -> Result<ResolvedConfig> {
         return Err(anyhow!("host list is empty"));
     }
 
+    let client_hosts = profile
+        .and_then(|profile| profile.client_hosts.clone())
+        .map(|hosts| normalize_hosts(hosts.iter().map(String::as_str)))
+        .unwrap_or_default();
+
     let admin_host = cli
         .admin_host
         .clone()
@@ -223,6 +230,7 @@ fn resolve_config(cli: &Cli) -> Result<ResolvedConfig> {
         profile: profile_name,
         admin_host,
         hosts,
+        client_hosts,
         refresh_secs,
         trace_auto_start,
         trace_window_secs,
@@ -239,6 +247,7 @@ fn run_live_tui(config_path: PathBuf, cfg: ResolvedConfig) -> Result<()> {
     let mut app = App {
         profile: cfg.profile,
         hosts: cfg.hosts,
+        client_hosts: cfg.client_hosts,
         admin_host: cfg.admin_host,
         config_path: Some(config_path),
         config_editor,
@@ -268,6 +277,10 @@ fn run_live_tui(config_path: PathBuf, cfg: ResolvedConfig) -> Result<()> {
         trace_active: 0,
         trace_following: false,
         trace_session: None,
+        trace_source: TraceSource::Osdtrace,
+        kfstrace_events: Vec::new(),
+        kfstrace_active: 0,
+        kfstrace_stop: Arc::new(AtomicBool::new(false)),
         trace_auto_start: cfg.trace_auto_start,
         trace_window_secs: cfg.trace_window_secs,
         trace_latency_ms: cfg.trace_latency_ms,
@@ -306,6 +319,7 @@ fn run_replay_tui(file: PathBuf) -> Result<()> {
             .as_ref()
             .map(|s| s.hosts.clone())
             .unwrap_or_default(),
+        client_hosts: Vec::new(),
         refresh_secs: 1,
         trace_auto_start: false,
         trace_window_secs: 10,
@@ -316,6 +330,7 @@ fn run_replay_tui(file: PathBuf) -> Result<()> {
     let mut app = App {
         profile: fallback.profile.clone(),
         hosts: fallback.hosts.clone(),
+        client_hosts: fallback.client_hosts.clone(),
         admin_host: fallback.admin_host.clone(),
         config_path: None,
         config_editor: ConfigEditor::new(ConfigDraft::from_resolved(&fallback)),
@@ -345,6 +360,10 @@ fn run_replay_tui(file: PathBuf) -> Result<()> {
         trace_active: 0,
         trace_following: false,
         trace_session: None,
+        trace_source: TraceSource::Osdtrace,
+        kfstrace_events: Vec::new(),
+        kfstrace_active: 0,
+        kfstrace_stop: Arc::new(AtomicBool::new(false)),
         trace_auto_start: false,
         trace_window_secs: 10,
         trace_latency_ms: 1,
@@ -463,12 +482,20 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Result<bool> {
                 Ok(false)
             }
             KeyCode::Char('t') => {
+                app.trace_source = TraceSource::Osdtrace;
                 let latency_ms = app.trace_latency_ms.max(1);
                 toggle_trace(app, latency_ms);
                 Ok(false)
             }
             KeyCode::Char('0') => {
+                app.trace_source = TraceSource::Osdtrace;
                 spawn_trace_run(app, 0);
+                Ok(false)
+            }
+            KeyCode::Char('k') => {
+                app.trace_source = TraceSource::Kfstrace;
+                let latency_us = app.trace_latency_ms.saturating_mul(1000);
+                toggle_kfstrace(app, latency_us);
                 Ok(false)
             }
             KeyCode::Char('i') => {

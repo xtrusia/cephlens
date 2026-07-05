@@ -10,9 +10,10 @@ use ratatui::{
 
 use crate::app::{
     App, EVENT_LOG_MIN_HEIGHT, EVENT_LOG_RESERVED_ROWS, Mode, PanelFocus, StreamState,
-    StreamStatus, live_streams_active,
+    StreamStatus, TraceSource, live_streams_active,
 };
 use crate::editor::ConfigDraft;
+use crate::kfstrace::kfs_op_rows;
 use crate::model::NodeSummary;
 use crate::trace::{TraceGraphRow, dominant_component, trace_graph_rows as build_trace_graph_rows};
 use crate::util::{clamp_bottom_scroll, clamp_top_scroll, short};
@@ -391,7 +392,8 @@ fn command_spans(commands: &[(&'static str, &'static str)]) -> Vec<Span<'static>
 fn footer_commands(app: &App) -> Vec<(&'static str, &'static str)> {
     match app.mode {
         Mode::Live => vec![
-            ("t", "trace"),
+            ("t", "osd"),
+            ("k", "kfs"),
             ("0", "all"),
             ("c", "config"),
             ("Tab", "panel"),
@@ -421,8 +423,9 @@ fn help_commands(app: &App) -> Vec<(&'static str, &'static str)> {
             ("c", "edit config"),
             ("p", "probe node + osdtrace readiness"),
             ("i", "install osdtrace"),
-            ("t", "toggle trace (>=1ms)"),
-            ("0", "trace all observed ops"),
+            ("t", "toggle osdtrace (>=1ms)"),
+            ("k", "toggle kfstrace (CephFS MDS)"),
+            ("0", "osdtrace all observed ops"),
             ("x", "clear captured trace"),
             ("Tab / Shift+Tab", "focus next / prev panel"),
             ("Up/Dn j/k", "scroll focused panel"),
@@ -725,7 +728,91 @@ fn insight_line(insight: Insight) -> Line<'static> {
     ])
 }
 
+fn draw_kfstrace_events(frame: &mut Frame<'_>, app: &App, area: Rect) {
+    let visible = table_visible_rows(area);
+    let rows_data = kfs_op_rows(&app.kfstrace_events);
+    let total = rows_data.len();
+    let scroll = clamp_top_scroll(app.trace_scroll, total, visible);
+    let active = app.kfstrace_active > 0;
+
+    let rows: Vec<Row<'static>> =
+        if rows_data.is_empty() {
+            let hint = if active {
+                "kfstrace listening; generate CephFS metadata ops"
+            } else {
+                "press k to trace CephFS MDS ops on client_hosts"
+            };
+            vec![Row::new(vec![
+                Cell::from("-"),
+                Cell::from("0").style(Style::default().fg(MUTED)),
+                Cell::from("-"),
+                Cell::from("-"),
+                Cell::from(hint).style(Style::default().fg(MUTED)),
+            ])]
+        } else {
+            rows_data
+                .iter()
+                .skip(scroll)
+                .take(visible)
+                .map(|row| {
+                    Row::new(vec![
+                        Cell::from(row.op.clone()).style(Style::default().fg(ACCENT).bold()),
+                        Cell::from(row.count.to_string()).style(trace_ops_style(row.count)),
+                        Cell::from(format_latency_us(row.avg_us)),
+                        Cell::from(format_latency_us(row.max_us))
+                            .style(Style::default().fg(latency_color(row.max_us))),
+                        Cell::from(if row.unsafe_count > 0 {
+                            row.unsafe_count.to_string()
+                        } else {
+                            "-".to_owned()
+                        })
+                        .style(
+                            Style::default().fg(if row.unsafe_count > 0 { WARN } else { MUTED }),
+                        ),
+                    ])
+                })
+                .collect()
+        };
+
+    let title = if active {
+        "kfstrace: mds running"
+    } else {
+        "kfstrace: mds"
+    };
+    frame.render_widget(
+        Table::new(
+            rows,
+            [
+                Constraint::Length(10),
+                Constraint::Length(7),
+                Constraint::Length(8),
+                Constraint::Length(8),
+                Constraint::Min(8),
+            ],
+        )
+        .header(
+            Row::new(["MDS op", "Ops", "Avg", "Max", "Unsafe"])
+                .style(Style::default().fg(MUTED).bold()),
+        )
+        .block(scroll_panel(
+            app,
+            PanelFocus::Trace,
+            title,
+            total,
+            visible,
+            scroll,
+            false,
+            resize_hint(app, PanelFocus::Trace, area),
+        )),
+        area,
+    );
+}
+
 fn draw_trace_events(frame: &mut Frame<'_>, app: &App, area: Rect) {
+    if app.trace_source == TraceSource::Kfstrace {
+        draw_kfstrace_events(frame, app, area);
+        return;
+    }
     let visible = table_visible_rows(area);
     let compact = area.width < 104;
     let trace_active = app.trace_following || app.trace_active > 0;
