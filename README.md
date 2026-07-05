@@ -2,9 +2,10 @@
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 ![Rust](https://img.shields.io/badge/rust-1.85%2B-orange.svg)
+[![CI](https://github.com/xtrusia/cephlens/actions/workflows/ci.yml/badge.svg)](https://github.com/xtrusia/cephlens/actions/workflows/ci.yml)
 
 An SSH-driven Ceph investigation TUI with live cluster status, per-node
-readiness, and osdtrace eBPF latency views.
+readiness, and osdtrace/kfstrace/radostrace eBPF latency views.
 
 cephlens runs on Windows, Linux, or macOS and talks to Ceph nodes over
 persistent SSH streams. It is currently a lab-first prototype, not a packaged
@@ -32,7 +33,43 @@ Controller (where the TUI runs):
 Ceph nodes:
 
 - `ceph` and `rados` CLIs, plus passwordless `sudo -n` for the observed commands (see Access and sudo).
-- For tracing, the `osdtrace` binary from [cephtrace](https://github.com/taodd/cephtrace). osdtrace is eBPF-based and needs a Linux 5.8+ kernel; cephlens installs a prebuilt binary automatically only on Debian/Ubuntu x86_64, otherwise install it yourself.
+- For tracing, the `osdtrace`, `kfstrace`, and `radostrace` binaries from [cephtrace](https://github.com/taodd/cephtrace). They are eBPF-based and need a Linux 5.8+ kernel on the Ceph hosts. Release archives bundle them (see Install); a source build does not, so place them under `~/.cephlens/bin/` or `PATH` yourself. cephlens can also install osdtrace from a pinned URL (see Configuration).
+
+## Install
+
+Prebuilt binaries for Linux, macOS, and Windows are attached to each
+[release](https://github.com/xtrusia/cephlens/releases). The archives bundle the
+cephtrace tracers, so a downloaded build is self-contained — useful for
+air-gapped clusters.
+
+Install script (picks the right binary for your platform):
+
+```sh
+# Linux / macOS
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/xtrusia/cephlens/releases/latest/download/cephlens-installer.sh | sh
+```
+
+```powershell
+# Windows (PowerShell)
+irm https://github.com/xtrusia/cephlens/releases/latest/download/cephlens-installer.ps1 | iex
+```
+
+Or download a `cephlens-<target>.tar.xz` / `.zip` archive and extract it. Each
+archive holds the `cephlens` binary plus a `cephtrace/` directory with the
+`osdtrace` / `kfstrace` / `radostrace` binaries; deploy those to your Ceph hosts
+under `~/.cephlens/bin/` or `PATH`.
+
+### From source
+
+```sh
+cargo install --git https://github.com/xtrusia/cephlens
+# or, in a clone:
+cargo build --release
+```
+
+A source build does not bundle cephtrace — supply the tracers on the hosts
+yourself (see Requirements). The `cargo run --` examples below become `cephlens`
+with an installed binary.
 
 ## Status
 
@@ -169,26 +206,24 @@ Create a fresh config template:
 cargo run -- init-config
 ```
 
-Useful keys in the TUI:
+Useful keys in the TUI (the dashboard auto-refreshes every `refresh_secs`):
 
 ```text
-r      one-shot refresh
-p      run a probe readiness check
-c      edit config
-i      install osdtrace
-s      stop trace runners
-t      start temp trace runners with latency threshold 1ms
-0      start temp trace runners and show all observed ops
-x      clear captured trace events
-v      open the osdtrace targets view (Esc returns)
-[/-    shrink event log
-]/+    grow event log
-Tab    focus next panel
-Shift+Tab focus previous panel
-Up/Down or j/k scroll focused panel
-PgUp/PgDn scroll focused panel faster
-Home/End jump focused panel to start/end
-q/Esc  quit
+p          run a probe readiness check
+c          edit config
+t/f/r      view osdtrace / kfstrace / radostrace; press again to start or stop (confirmed)
+a          start or stop all trace sources (confirmed)
+i          install osdtrace
+x          clear captured trace events
+?          toggle the help overlay
+[/-        shrink event log
+]/+        grow event log
+Tab        focus next panel
+Shift+Tab  focus previous panel
+Up/Down or j/k    scroll focused panel
+PgUp/PgDn  scroll focused panel faster
+Home/End   jump focused panel to start/end
+q/Esc      quit
 ```
 
 Config screen keys:
