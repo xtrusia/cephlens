@@ -1,5 +1,9 @@
 name: CI
 
+permissions:
+  contents: read
+  checks: write
+
 on:
   push:
     branches: [main]
@@ -17,10 +21,10 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Format
         run: cargo fmt --all --check
-      - name: Install cargo-audit
-        run: cargo install cargo-audit --version 0.22.2 --locked
       - name: Audit dependencies
-        run: cargo audit
+        uses: rustsec/audit-check@69366f33c96575abad1ee0dba8212993eecbe998 # v2.0.0
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
       - name: Clippy
         run: cargo clippy --all-targets -- -D warnings
       - name: Build
