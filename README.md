@@ -11,16 +11,16 @@ cephlens runs on Windows, Linux, or macOS and talks to Ceph nodes over
 persistent SSH streams. It is currently a lab-first prototype, not a packaged
 production monitoring agent.
 
-Trace collection uses temporary remote shell runners that start `osdtrace`,
-stream its output back to the TUI, and remove themselves when tracing stops or
-cephlens exits.
+Trace collection runs cephtrace tracers over SSH. `osdtrace` uses a temporary
+remote runner script that removes itself when tracing stops or cephlens exits;
+`kfstrace` and `radostrace` run directly on configured client hosts.
 
 ## Features
 
 - Live cluster health, quorum, OSD counts, and IO throughput over a single SSH stream.
 - Per-node readiness: connection state, OSD ids, CPU and memory percent, and microceph version.
 - osdtrace eBPF latency tracing with per-OSD and per-PG breakdown of queue, BlueStore, and KV-commit latency.
-- No standing agent: no permanent daemon on the nodes; runner scripts remove themselves on stop, quit, or TTL expiry. (The cephtrace tracer binaries you deploy do persist under `~/.cephlens/bin/`.)
+- No standing agent: no permanent daemon on the nodes; the osdtrace runner script removes itself on stop, quit, or TTL expiry. (The cephtrace tracer binaries you deploy do persist under `~/.cephlens/bin/`.)
 - Edit hosts and trace settings live in the TUI; changes apply to open SSH streams immediately.
 
 ## Requirements
@@ -102,6 +102,7 @@ default_profile = "example"
 [profiles.example]
 admin_host = "ceph-admin"
 hosts = ["ceph-admin", "ceph-node-1", "ceph-node-2", "ceph-node-3"]
+client_hosts = ["ceph-client-1"]
 refresh_secs = 1
 trace_auto_start = false
 trace_window_secs = 10
@@ -117,7 +118,9 @@ trace_ttl_secs = 1800
 
 `admin_host` is the host where cephlens runs Ceph admin commands such as
 `ceph -s`, `ceph osd tree`, and `ceph osd df`. The `hosts` list is the set of
-machines that get persistent node-readiness SSH streams.
+machines that get persistent node-readiness SSH streams and osdtrace runners.
+`client_hosts` is optional; when set, it is where kfstrace and radostrace run.
+Leave it out if you only want the OSD-side osdtrace view.
 
 ## Access and sudo
 
@@ -198,7 +201,7 @@ trace path placeholders:
   <radostrace_path> is radostrace from PATH or ~/.cephlens/bin/radostrace
 ```
 
-The runner script itself is written under
+The osdtrace runner script is written under
 `~/.cache/cephlens/runner/cephlens-runner-*.sh` on each remote host and is
 removed on stop, quit, or TTL expiry. The optional downloaded `osdtrace` binary
 is stored under `~/.cephlens/bin/osdtrace`.
@@ -247,9 +250,9 @@ q/Esc      quit
 Config screen keys:
 
 ```text
-up/down  select admin_host, refresh_secs, or a host row
+up/down  select a config or host row
 a        add host
-e/Enter  edit selected row
+e/Enter  edit or toggle selected row
 d/Delete delete selected host row
 s        save current profile again
 Esc/c    return to live dashboard
@@ -263,17 +266,18 @@ Before installing, cephlens checks the remote kernel, architecture, and
 Linux, x86_64/amd64, and in the Debian/Ubuntu family. Other platforms are shown
 as unsupported instead of being blindly overwritten.
 
-The integrated trace panel currently focuses on `osdtrace` because the
-prototype observes Ceph OSD nodes. It streams `op_r`, `op_w`, and `subop_w`
-lines into the live dashboard and summarizes total, queue, and BlueStore
-latency. On wide terminals it appears on the right; on tall terminals it appears
-below the dashboard.
-When `trace_auto_start` is true, cephlens starts trace runners as soon as the
+The integrated trace panel can show osdtrace, kfstrace, or radostrace data.
+The osdtrace view observes Ceph OSD nodes. It streams `op_r`, `op_w`, and
+`subop_w` lines into the live dashboard and summarizes total, queue, and
+BlueStore latency. The kfstrace and radostrace views run on `client_hosts`.
+On wide terminals the trace panel appears on the right; on tall terminals it
+appears below the dashboard.
+When `trace_auto_start` is true, cephlens starts osdtrace runners as soon as the
 TUI opens. The default config keeps it false so an operator explicitly starts
-and stops tracing with `t`, `0`, and `s`.
+and stops tracing with `t`, `f`, `r`, or `a`.
 If no events appear, the cluster may be idle or all observed operations may be
-below the `t` key's 1ms latency threshold; press `0` to trace all observed ops
-or run Ceph IO while the trace runners are active.
+below the configured 1ms latency threshold. Set `trace_latency_ms = 0` to trace
+all observed osdtrace ops, or run Ceph IO while the trace runners are active.
 
 Live TUI mode keeps one SSH stream open for cluster status and one stream per
 host for node readiness. Each stream emits data once per second by default and
