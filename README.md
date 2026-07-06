@@ -155,16 +155,7 @@ hosts. If you deploy bundled tracers under `~/.cephlens/bin/`, add those
 absolute paths too:
 
 ```sudoers
-Cmnd_Alias CEPHLENS_STATUS = /usr/bin/true, /usr/bin/ceph
-Cmnd_Alias CEPHLENS_BENCH = /usr/bin/rados
-Cmnd_Alias CEPHLENS_OSDTRACE = /usr/bin/osdtrace, /home/cephlens/.cephlens/bin/osdtrace
-Cmnd_Alias CEPHLENS_KFSTRACE = /usr/bin/kfstrace, /home/cephlens/.cephlens/bin/kfstrace
-Cmnd_Alias CEPHLENS_RADOSTRACE = /usr/bin/radostrace, /home/cephlens/.cephlens/bin/radostrace
-Cmnd_Alias CEPHLENS_TRACE_CONTROL = /usr/bin/kill
-
-cephlens ALL=(root) NOPASSWD: CEPHLENS_STATUS, CEPHLENS_BENCH
-cephlens ALL=(root) NOPASSWD: CEPHLENS_OSDTRACE, CEPHLENS_KFSTRACE
-cephlens ALL=(root) NOPASSWD: CEPHLENS_RADOSTRACE, CEPHLENS_TRACE_CONTROL
+cephlens ALL=(root) NOPASSWD: /usr/bin/true, /usr/bin/ceph, /usr/bin/rados, /usr/bin/osdtrace, /usr/bin/kfstrace, /usr/bin/radostrace, /usr/bin/kill, /home/cephlens/.cephlens/bin/osdtrace, /home/cephlens/.cephlens/bin/kfstrace, /home/cephlens/.cephlens/bin/radostrace
 ```
 
 The current prototype runs these privileged operations:
