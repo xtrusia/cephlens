@@ -178,21 +178,22 @@ bench command:
   sudo -n rados -p cephlens-test cleanup
 
 trace install / probe:
-  sudo -n osdtrace --list
-  sudo -n ~/.cephlens/bin/osdtrace --list
+  sudo -n <osdtrace_path> --list
 
 osdtrace runner on hosts:
-  sudo -n osdtrace -a -l <latency_ms>
-  sudo -n ~/.cephlens/bin/osdtrace -a -l <latency_ms>
+  sudo -n <osdtrace_path> -a -l <latency_ms>
   sudo -n kill <osdtrace_pid> when cleanup cannot kill it as the SSH user
 
 kfstrace runner on client_hosts:
-  sudo -n kfstrace -m mds -l <latency_us> -t <ttl_secs>
-  sudo -n ~/.cephlens/bin/kfstrace -m mds -l <latency_us> -t <ttl_secs>
+  sudo -n <kfstrace_path> -m mds -l <latency_us> -t <ttl_secs>
 
 radostrace runner on client_hosts:
-  sudo -n radostrace -t <ttl_secs>
-  sudo -n ~/.cephlens/bin/radostrace -t <ttl_secs>
+  sudo -n <radostrace_path> -t <ttl_secs>
+
+trace path placeholders:
+  <osdtrace_path> is osdtrace from PATH or ~/.cephlens/bin/osdtrace
+  <kfstrace_path> is kfstrace from PATH or ~/.cephlens/bin/kfstrace
+  <radostrace_path> is radostrace from PATH or ~/.cephlens/bin/radostrace
 ```
 
 The runner script itself is written under
