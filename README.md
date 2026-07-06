@@ -11,6 +11,8 @@ cephlens runs on Windows, Linux, or macOS and talks to Ceph nodes over
 persistent SSH streams. It is currently a lab-first prototype, not a packaged
 production monitoring agent.
 
+![cephlens TUI showing cluster vitals, node readiness, OSD map, and osdtrace latency](docs/screenshot.png)
+
 Trace collection runs cephtrace tracers over SSH. `osdtrace` uses a temporary
 remote runner script that removes itself when tracing stops or cephlens exits;
 `kfstrace` and `radostrace` run directly on configured client hosts.
