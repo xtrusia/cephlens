@@ -26,7 +26,10 @@ use crate::{
         CleanupResult, cleanup_trace_runners_async, cleanup_trace_runners_wait, install_trace_host,
         probe_trace_host, trace_runner_install_command, trace_runner_script, trace_threshold_label,
     },
-    session::append_snapshot,
+    session::{
+        TRACE_KFS_LOG, TRACE_OSD_LOG, TRACE_RADOS_LOG, append_snapshot, append_trace_line,
+        session_snapshot_path,
+    },
     stream::{cluster_stream_command, node_stream_command, parse_node_stream_payload},
     trace::{
         TRACE_BUCKET_COUNT, TRACE_BUCKET_SECS, TraceBucket, TraceEvent, TraceInstallConfig,
@@ -419,6 +422,7 @@ pub(crate) fn drain_worker_messages(app: &mut App) {
                 app.trace_targets = targets;
             }
             WorkerMsg::TraceLine { host, line } => {
+                record_raw_trace_line(app, TRACE_OSD_LOG, &host, &line);
                 if let Some(message) = line.trim().strip_prefix("__CEPHLENS_RUNNER__") {
                     app.log(format!("runner {host}: {}", message.trim()));
                     continue;
@@ -443,6 +447,7 @@ pub(crate) fn drain_worker_messages(app: &mut App) {
                 }
             }
             WorkerMsg::KfsLine { host, line } => {
+                record_raw_trace_line(app, TRACE_KFS_LOG, &host, &line);
                 let trimmed = line.trim();
                 if let Some(err) = trimmed.strip_prefix("__CEPHLENS_KFS_ERROR__") {
                     app.log(format!("kfstrace {host}: {}", err.trim()));
@@ -460,6 +465,7 @@ pub(crate) fn drain_worker_messages(app: &mut App) {
                 app.log(format!("kfstrace {host}: {message}"));
             }
             WorkerMsg::RadosLine { host, line } => {
+                record_raw_trace_line(app, TRACE_RADOS_LOG, &host, &line);
                 let trimmed = line.trim();
                 if let Some(err) = trimmed.strip_prefix("__CEPHLENS_RADOS_ERROR__") {
                     app.log(format!("radostrace {host}: {}", err.trim()));
@@ -551,12 +557,13 @@ fn handle_stream_payload(app: &mut App, id: &str, payload: &str) -> Result<()> {
 }
 
 fn record_session_snapshot(app: &mut App, snapshot: &Snapshot) {
-    let Some(path) = app.session_path.clone() else {
+    let Some(session_dir) = app.session_path.clone() else {
         return;
     };
     if app.session_records >= SESSION_SNAPSHOT_LIMIT {
         return;
     }
+    let path = session_snapshot_path(&session_dir);
     match append_snapshot(&path, snapshot) {
         Ok(()) => {
             app.session_records += 1;
@@ -567,6 +574,15 @@ fn record_session_snapshot(app: &mut App, snapshot: &Snapshot) {
             }
         }
         Err(err) => app.log(format!("record failed: {err:#}")),
+    }
+}
+
+fn record_raw_trace_line(app: &mut App, file_name: &str, host: &str, line: &str) {
+    let Some(session_dir) = app.session_path.clone() else {
+        return;
+    };
+    if let Err(err) = append_trace_line(&session_dir, file_name, host, line) {
+        app.log(format!("trace record failed: {err:#}"));
     }
 }
 

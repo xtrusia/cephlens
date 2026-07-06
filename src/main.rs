@@ -47,7 +47,7 @@ use editor::{
     ConfigDraft, ConfigEditor, handle_config_input, handle_config_key, open_config_editor,
 };
 use runner::{CleanupResult, report_cleanup_results};
-use session::{append_snapshot, create_session_path, load_snapshots};
+use session::{append_snapshot, create_session_dir, create_session_path, load_snapshots};
 use trace::{TraceInstallConfig, validate_sha256};
 
 #[derive(Parser, Debug)]
@@ -260,7 +260,7 @@ fn resolve_config(cli: &Cli) -> Result<ResolvedConfig> {
 }
 
 fn run_live_tui(config_path: PathBuf, cfg: ResolvedConfig) -> Result<()> {
-    let session_path = create_session_path()?;
+    let session_path = create_session_dir()?;
     let (tx, rx) = mpsc::channel();
     let config_editor = ConfigEditor::new(ConfigDraft::from_resolved(&cfg));
     let mut app = App {
