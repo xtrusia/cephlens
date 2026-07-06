@@ -150,16 +150,29 @@ cephlens ALL=(root) NOPASSWD: ALL
 ```
 
 For production, prefer a dedicated user and a command whitelist. Adjust paths
-with `command -v ceph`, `command -v rados`, and `command -v osdtrace` on your
-hosts:
+with `command -v true ceph rados osdtrace kfstrace radostrace kill` on your
+hosts. If you deploy bundled tracers under `~/.cephlens/bin/`, add those
+absolute paths too:
 
 ```sudoers
-cephlens ALL=(root) NOPASSWD: /usr/bin/ceph, /usr/bin/rados, /usr/bin/osdtrace, /usr/bin/kill
+Cmnd_Alias CEPHLENS_STATUS = /usr/bin/true, /usr/bin/ceph
+Cmnd_Alias CEPHLENS_BENCH = /usr/bin/rados
+Cmnd_Alias CEPHLENS_OSDTRACE = /usr/bin/osdtrace, /home/cephlens/.cephlens/bin/osdtrace
+Cmnd_Alias CEPHLENS_KFSTRACE = /usr/bin/kfstrace, /home/cephlens/.cephlens/bin/kfstrace
+Cmnd_Alias CEPHLENS_RADOSTRACE = /usr/bin/radostrace, /home/cephlens/.cephlens/bin/radostrace
+Cmnd_Alias CEPHLENS_TRACE_CONTROL = /usr/bin/kill
+
+cephlens ALL=(root) NOPASSWD: CEPHLENS_STATUS, CEPHLENS_BENCH
+cephlens ALL=(root) NOPASSWD: CEPHLENS_OSDTRACE, CEPHLENS_KFSTRACE
+cephlens ALL=(root) NOPASSWD: CEPHLENS_RADOSTRACE, CEPHLENS_TRACE_CONTROL
 ```
 
 The current prototype runs these privileged operations:
 
 ```text
+availability checks:
+  sudo -n true
+
 admin host:
   sudo -n ceph -s --format json
   sudo -n ceph osd tree --format json
@@ -175,9 +188,18 @@ trace install / probe:
   sudo -n osdtrace --list
   sudo -n ~/.cephlens/bin/osdtrace --list
 
-trace runner:
+osdtrace runner on hosts:
   sudo -n osdtrace -a -l <latency_ms>
+  sudo -n ~/.cephlens/bin/osdtrace -a -l <latency_ms>
   sudo -n kill <osdtrace_pid> when cleanup cannot kill it as the SSH user
+
+kfstrace runner on client_hosts:
+  sudo -n kfstrace -m mds -l <latency_us> -t <ttl_secs>
+  sudo -n ~/.cephlens/bin/kfstrace -m mds -l <latency_us> -t <ttl_secs>
+
+radostrace runner on client_hosts:
+  sudo -n radostrace -t <ttl_secs>
+  sudo -n ~/.cephlens/bin/radostrace -t <ttl_secs>
 ```
 
 The runner script itself is written under
