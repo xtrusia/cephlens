@@ -149,13 +149,15 @@ For a lab, a broad passwordless sudo rule is convenient:
 cephlens ALL=(root) NOPASSWD: ALL
 ```
 
-For production, prefer a dedicated user and a command whitelist. Adjust paths
-with `command -v true ceph rados osdtrace kfstrace radostrace kill` on your
-hosts. If you deploy bundled tracers under `~/.cephlens/bin/`, add those
-absolute paths too:
+For production, prefer a dedicated user and a command whitelist. This sudoers
+example assumes the bundled tracers are copied under
+`/home/cephlens/.cephlens/bin/`. Adjust the other paths with
+`command -v true ceph rados kill` on your hosts. If you install tracers on
+`PATH` instead, replace the tracer paths with `command -v osdtrace kfstrace
+radostrace` results:
 
 ```sudoers
-cephlens ALL=(root) NOPASSWD: /usr/bin/true, /usr/bin/ceph, /usr/bin/rados, /usr/bin/osdtrace, /usr/bin/kfstrace, /usr/bin/radostrace, /usr/bin/kill, /home/cephlens/.cephlens/bin/osdtrace, /home/cephlens/.cephlens/bin/kfstrace, /home/cephlens/.cephlens/bin/radostrace
+cephlens ALL=(root) NOPASSWD: /usr/bin/true, /usr/bin/ceph, /usr/bin/rados, /usr/bin/kill, /home/cephlens/.cephlens/bin/osdtrace, /home/cephlens/.cephlens/bin/kfstrace, /home/cephlens/.cephlens/bin/radostrace
 ```
 
 The current prototype runs these privileged operations:
