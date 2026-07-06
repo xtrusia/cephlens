@@ -281,6 +281,11 @@ If no events appear, the cluster may be idle or all observed operations may be
 below the configured 1ms latency threshold. Set `trace_latency_ms = 0` to trace
 all observed osdtrace ops, or run Ceph IO while the trace runners are active.
 
+Live TUI sessions are recorded under `.cephlens/sessions/<timestamp>/`.
+Cluster snapshots are appended to `snapshots.jsonl`, and raw trace lines are
+appended as plain text to `trace-osd.log`, `trace-kfs.log`, and
+`trace-rados.log`.
+
 Live TUI mode keeps one SSH stream open for cluster status and one stream per
 host for node readiness. Each stream emits data once per second by default and
 the node table shows connection state (`live`, `dial`, `retry`, `error`), OSD
