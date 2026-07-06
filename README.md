@@ -102,12 +102,14 @@ default_profile = "example"
 [profiles.example]
 admin_host = "ceph-admin"
 hosts = ["ceph-admin", "ceph-node-1", "ceph-node-2", "ceph-node-3"]
-client_hosts = ["ceph-client-1"]
 refresh_secs = 1
 trace_auto_start = false
 trace_window_secs = 10
 trace_latency_ms = 1
 trace_ttl_secs = 1800
+
+# Optional client-side tracing targets for kfstrace and radostrace.
+# client_hosts = ["ceph-client-1"]
 
 # Optional automatic osdtrace install. Keep this disabled unless you pin an
 # artifact and verify it with SHA256.
