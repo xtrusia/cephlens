@@ -182,13 +182,15 @@ trace install / probe:
 
 osdtrace runner on hosts:
   sudo -n <osdtrace_path> -a -l <latency_ms>
-  sudo -n kill <osdtrace_pid> when cleanup cannot kill it as the SSH user
 
 kfstrace runner on client_hosts:
   sudo -n <kfstrace_path> -m mds -l <latency_us> -t <ttl_secs>
 
 radostrace runner on client_hosts:
   sudo -n <radostrace_path> -t <ttl_secs>
+
+trace cleanup:
+  sudo -n kill <osdtrace_pid> when osdtrace runner cleanup cannot kill it as the SSH user
 
 trace path placeholders:
   <osdtrace_path> is osdtrace from PATH or ~/.cephlens/bin/osdtrace
