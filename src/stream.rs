@@ -24,12 +24,22 @@ done
     )
 }
 
-// Shared node facts collection: sets hostname, sudo_state, micro, count, ids,
-// and mem_pct shell variables. Used by both the one-shot probe in collect.rs
-// and the streaming loop below.
+// Shared node facts collection: sets hostname, sudo_state, ceph_version,
+// deployment, count, ids, and mem_pct shell variables. Used by both the
+// one-shot probe in collect.rs and the streaming loop below.
 pub(crate) const NODE_FACTS_SNIPPET: &str = r#"hostname=$(hostname)
 if sudo -n true 2>/dev/null; then sudo_state=ok; else sudo_state=needs_password; fi
-micro=$(snap list microceph 2>/dev/null | awk 'NR==2 {print $2" "$4" "$6; found=1} END {if (!found) print "missing"}')
+ceph_version=$(ceph --version 2>/dev/null | head -1)
+if [ -z "$ceph_version" ]; then ceph_version=missing; fi
+deployment=generic
+micro=$(snap list microceph 2>/dev/null | awk 'NR==2 {print $2" "$4" "$6; found=1}')
+if [ -n "$micro" ]; then
+  deployment="microceph $micro"
+elif command -v cephadm >/dev/null 2>&1; then
+  deployment=cephadm
+elif [ -d /var/lib/rook ]; then
+  deployment=rook
+fi
 count=$(pgrep -c '[c]eph-osd' 2>/dev/null || echo 0)
 ids=$(pgrep -af '[c]eph-osd --cluster ceph' 2>/dev/null | sed -n 's/.*--id \([0-9][0-9]*\).*/\1/p' | paste -sd, -)
 mem_pct=$(awk '/MemTotal:/ {total=$2} /MemAvailable:/ {avail=$2} END {if (total > 0) printf "%.1f", (total-avail)*100/total; else printf "0.0"}' /proc/meminfo)"#;
@@ -58,7 +68,7 @@ while true; do
   fi
   prev_total=$total
   prev_idle=$idle_all
-  printf '{{"type":"node","hostname":"%s","sudo":"%s","microceph":"%s","ceph_osd_processes":%s,"osd_ids":"%s","cpu_percent":%s,"mem_percent":%s}}\n' "$hostname" "$sudo_state" "$micro" "$count" "$ids" "$cpu_pct" "$mem_pct"
+  printf '{{"type":"node","hostname":"%s","sudo":"%s","ceph_version":"%s","deployment":"%s","ceph_osd_processes":%s,"osd_ids":"%s","cpu_percent":%s,"mem_percent":%s}}\n' "$hostname" "$sudo_state" "$ceph_version" "$deployment" "$count" "$ids" "$cpu_pct" "$mem_pct"
   sleep {interval_secs}
 done
 "#,
@@ -82,7 +92,8 @@ pub(crate) fn parse_node_stream_payload(host: &str, payload: &str) -> Result<Nod
         host: host.to_owned(),
         hostname: ptr_str(&value, "/hostname"),
         sudo: ptr_str(&value, "/sudo"),
-        microceph: ptr_str(&value, "/microceph"),
+        ceph_version: ptr_str(&value, "/ceph_version"),
+        deployment: ptr_str(&value, "/deployment"),
         ceph_osd_processes: ptr_u64(&value, "/ceph_osd_processes"),
         osd_ids: ptr_str(&value, "/osd_ids"),
         cpu_percent: ptr_f64(&value, "/cpu_percent"),

@@ -212,6 +212,163 @@ sudo -n "$HOME/.cephlens/bin/osdtrace" --list 2>&1
     )
 }
 
+pub(crate) fn kfstrace_run_command(latency_us: u64, ttl_secs: u64) -> String {
+    kfstrace_run_command_with_session(latency_us, ttl_secs, None)
+}
+
+pub(crate) fn kfstrace_run_command_with_session(
+    latency_us: u64,
+    ttl_secs: u64,
+    session: Option<&str>,
+) -> String {
+    client_tracer_run_command(
+        "kfstrace",
+        &format!("-m mds -l {latency_us} -t {ttl_secs}"),
+        "__CEPHLENS_KFS_ERROR__",
+        session,
+    )
+}
+
+pub(crate) fn radostrace_run_command(ttl_secs: u64) -> String {
+    radostrace_run_command_with_session(ttl_secs, None)
+}
+
+pub(crate) fn radostrace_run_command_with_session(ttl_secs: u64, session: Option<&str>) -> String {
+    client_tracer_run_command(
+        "radostrace",
+        &format!("-t {ttl_secs}"),
+        "__CEPHLENS_RADOS_ERROR__",
+        session,
+    )
+}
+
+pub(crate) fn client_tracer_cleanup_command(tool: &str, session: &str) -> String {
+    let pidfile = client_tracer_pidfile(tool, session);
+    format!(
+        r#"
+pidfile={pidfile}
+pids=""
+if [ -f "$pidfile" ]; then
+  pids=$(cat "$pidfile" 2>/dev/null || true)
+fi
+if [ -n "$pids" ]; then
+  for pid in $pids; do
+    children=$(pgrep -P "$pid" 2>/dev/null || true)
+    if [ -n "$children" ]; then
+      sudo -n kill -TERM $children 2>/dev/null || kill -TERM $children 2>/dev/null || true
+    fi
+    sudo -n kill -TERM "$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null || true
+  done
+  sleep 1
+  for pid in $pids; do
+    children=$(pgrep -P "$pid" 2>/dev/null || true)
+    if [ -n "$children" ]; then
+      sudo -n kill -KILL $children 2>/dev/null || kill -KILL $children 2>/dev/null || true
+    fi
+    sudo -n kill -KILL "$pid" 2>/dev/null || kill -KILL "$pid" 2>/dev/null || true
+  done
+fi
+rm -f "$pidfile" 2>/dev/null || true
+"#
+    )
+}
+
+fn client_tracer_run_command(
+    tool: &str,
+    args: &str,
+    error_prefix: &str,
+    session: Option<&str>,
+) -> String {
+    let pidfile = session
+        .map(|session| client_tracer_pidfile(tool, session))
+        .unwrap_or_else(|| "''".to_owned());
+    format!(
+        r#"
+bin=$(command -v {tool} 2>/dev/null || true)
+if [ -z "$bin" ] && [ -x "$HOME/.cephlens/bin/{tool}" ]; then
+  bin="$HOME/.cephlens/bin/{tool}"
+fi
+if [ -z "$bin" ]; then
+  echo "{error_prefix} {tool} missing"
+  exit 127
+fi
+if ! sudo -n true 2>/dev/null; then
+  echo "{error_prefix} sudo -n unavailable"
+  exit 126
+fi
+pidfile={pidfile}
+if [ -n "$pidfile" ]; then
+  mkdir -p "$(dirname "$pidfile")"
+  printf '%s\n' "$$" > "$pidfile"
+fi
+trace_pid=""
+cleanup() {{
+  code=$?
+  trap - INT TERM HUP EXIT
+  if [ -n "$trace_pid" ]; then
+    children=$(pgrep -P "$trace_pid" 2>/dev/null || true)
+    if [ -n "$children" ]; then
+      sudo -n kill -TERM $children 2>/dev/null || kill -TERM $children 2>/dev/null || true
+    fi
+    sudo -n kill -TERM "$trace_pid" 2>/dev/null || kill -TERM "$trace_pid" 2>/dev/null || true
+    wait "$trace_pid" 2>/dev/null || true
+  fi
+  case "$code" in
+    130|143) code=0 ;;
+  esac
+  if [ -n "$pidfile" ]; then
+    rm -f "$pidfile" 2>/dev/null || true
+  fi
+  exit "$code"
+}}
+trap cleanup INT TERM HUP EXIT
+sudo -n "$bin" {args} 2>&1 &
+trace_pid=$!
+wait "$trace_pid"
+status=$?
+trace_pid=""
+case "$status" in
+  130|143) exit 0 ;;
+esac
+exit "$status"
+"#
+    )
+}
+
+fn client_tracer_pidfile(tool: &str, session: &str) -> String {
+    let safe_tool = safe_client_tracer_token(tool);
+    let safe_session = safe_client_tracer_token(session);
+    format!("\"$HOME/.cache/cephlens/runner/cephlens-{safe_tool}-{safe_session}.pid\"")
+}
+
+fn safe_client_tracer_token(value: &str) -> String {
+    value
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric() || *ch == '-')
+        .collect()
+}
+
+pub(crate) fn tracer_probe_command(tool: &str) -> String {
+    format!(
+        r#"
+bin=$(command -v {tool} 2>/dev/null || true)
+if [ -z "$bin" ] && [ -x "$HOME/.cephlens/bin/{tool}" ]; then
+  bin="$HOME/.cephlens/bin/{tool}"
+fi
+if [ -z "$bin" ]; then
+  echo "__CEPHLENS_STATUS__ missing"
+  exit 0
+fi
+echo "__CEPHLENS_BIN__=$bin"
+if ! sudo -n true 2>/dev/null; then
+  echo "__CEPHLENS_ERROR__ sudo -n unavailable"
+  exit 0
+fi
+"$bin" --version 2>/dev/null | head -1 || true
+"#
+    )
+}
+
 pub(crate) fn parse_trace_target(host: &str, output: &str) -> TraceTarget {
     let mut target = TraceTarget {
         host: host.to_owned(),
@@ -433,6 +590,17 @@ pub(crate) fn trace_graph_rows(
     trace_series: &HashMap<String, VecDeque<TraceBucket>>,
     limit: usize,
 ) -> Vec<TraceGraphRow> {
+    let now_bucket = Utc::now().timestamp() / TRACE_BUCKET_SECS;
+    trace_graph_rows_at(snapshot, trace_events, trace_series, limit, now_bucket)
+}
+
+pub(crate) fn trace_graph_rows_at(
+    snapshot: Option<&Snapshot>,
+    trace_events: &[TraceEvent],
+    trace_series: &HashMap<String, VecDeque<TraceBucket>>,
+    limit: usize,
+    now_bucket: i64,
+) -> Vec<TraceGraphRow> {
     let mut hosts = BTreeMap::new();
     if let Some(snapshot) = snapshot {
         for osd in &snapshot.osds {
@@ -449,7 +617,6 @@ pub(crate) fn trace_graph_rows(
         hosts.entry(osd.clone()).or_insert_with(|| "-".to_owned());
     }
 
-    let now_bucket = Utc::now().timestamp() / TRACE_BUCKET_SECS;
     let first_bucket = now_bucket - TRACE_BUCKET_COUNT as i64 + 1;
     let mut rows = hosts
         .into_iter()
@@ -523,6 +690,51 @@ pub(crate) fn trace_graph_rows(
         rows.truncate(limit);
     }
     rows
+}
+
+pub(crate) fn record_trace_event_at(
+    trace_series: &mut HashMap<String, VecDeque<TraceBucket>>,
+    event: &TraceEvent,
+    bucket_id: i64,
+) {
+    let osd = normalize_osd_name(&event.osd);
+    if osd == "-" || event.op == "error" {
+        return;
+    }
+
+    let series = trace_series.entry(osd).or_default();
+    let needs_new_bucket = series
+        .back()
+        .map(|bucket| bucket.bucket != bucket_id)
+        .unwrap_or(true);
+    if needs_new_bucket {
+        series.push_back(TraceBucket {
+            bucket: bucket_id,
+            ..TraceBucket::default()
+        });
+    }
+    while series.len() > TRACE_BUCKET_COUNT {
+        series.pop_front();
+    }
+
+    if let Some(bucket) = series.back_mut() {
+        bucket.ops += 1;
+        bucket.op_sum_us = bucket.op_sum_us.saturating_add(event.op_lat_us);
+        bucket.op_max_us = bucket.op_max_us.max(event.op_lat_us);
+        bucket.throttle_max_us = bucket.throttle_max_us.max(event.throttle_lat_us);
+        bucket.recv_max_us = bucket.recv_max_us.max(event.recv_lat_us);
+        bucket.dispatch_max_us = bucket.dispatch_max_us.max(event.dispatch_lat_us);
+        bucket.queue_max_us = bucket.queue_max_us.max(event.queue_lat_us);
+        bucket.store_max_us = bucket.store_max_us.max(event.bluestore_lat_us);
+        bucket.kv_commit_max_us = bucket.kv_commit_max_us.max(event.kv_commit_us);
+        let pg = normalize_pg_name(&event.pg);
+        if pg != "-" {
+            let pg_stats = bucket.pgs.entry(pg).or_default();
+            pg_stats.ops += 1;
+            pg_stats.op_sum_us = pg_stats.op_sum_us.saturating_add(event.op_lat_us);
+            pg_stats.op_max_us = pg_stats.op_max_us.max(event.op_lat_us);
+        }
+    }
 }
 
 fn hot_pg_label(pg_stats: HashMap<String, TracePgStats>) -> String {
@@ -691,6 +903,17 @@ mod tests {
             )
         );
         assert!(command.contains("checksum mismatch expected=$sha256 actual=$actual"));
+    }
+
+    #[test]
+    fn client_tracer_commands_cleanup_remote_processes() {
+        let kfs = kfstrace_run_command(1000, 30);
+        let rados = radostrace_run_command(30);
+
+        assert!(kfs.contains("pgrep -P \"$trace_pid\""));
+        assert!(kfs.contains("sudo -n \"$bin\" -m mds -l 1000 -t 30"));
+        assert!(rados.contains("sudo -n \"$bin\" -t 30"));
+        assert!(rados.contains("130|143) code=0"));
     }
 
     #[test]

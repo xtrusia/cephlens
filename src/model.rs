@@ -40,7 +40,10 @@ pub(crate) struct NodeSummary {
     pub(crate) host: String,
     pub(crate) hostname: String,
     pub(crate) sudo: String,
-    pub(crate) microceph: String,
+    #[serde(default)]
+    pub(crate) ceph_version: String,
+    #[serde(default)]
+    pub(crate) deployment: String,
     pub(crate) ceph_osd_processes: u64,
     pub(crate) osd_ids: String,
     #[serde(default)]

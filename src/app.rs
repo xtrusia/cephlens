@@ -1,6 +1,6 @@
 use std::{
     collections::{HashMap, VecDeque},
-    io::{BufRead, BufReader, Write},
+    io::{BufRead, BufReader, Read, Write},
     path::PathBuf,
     process::{Command as ProcessCommand, Stdio},
     sync::{
@@ -32,8 +32,9 @@ use crate::{
     },
     stream::{cluster_stream_command, node_stream_command, parse_node_stream_payload},
     trace::{
-        TRACE_BUCKET_COUNT, TRACE_BUCKET_SECS, TraceBucket, TraceEvent, TraceInstallConfig,
-        TraceTarget, normalize_osd_name, normalize_pg_name, parse_trace_event,
+        TRACE_BUCKET_SECS, TraceBucket, TraceEvent, TraceInstallConfig, TraceTarget,
+        client_tracer_cleanup_command, kfstrace_run_command_with_session, parse_trace_event,
+        radostrace_run_command_with_session, record_trace_event_at,
     },
     util::shell_quote,
 };
@@ -179,9 +180,11 @@ pub(crate) struct App {
     pub(crate) kfstrace_events: Vec<KfsEvent>,
     pub(crate) kfstrace_active: usize,
     pub(crate) kfstrace_stop: Arc<AtomicBool>,
+    pub(crate) kfstrace_session: Option<String>,
     pub(crate) radostrace_events: Vec<RadosEvent>,
     pub(crate) radostrace_active: usize,
     pub(crate) radostrace_stop: Arc<AtomicBool>,
+    pub(crate) radostrace_session: Option<String>,
     pub(crate) trace_auto_start: bool,
     pub(crate) trace_window_secs: u64,
     pub(crate) trace_latency_ms: u64,
@@ -245,12 +248,74 @@ pub(crate) fn shutdown_streams(app: &App, wait_for_cleanup: bool) -> Vec<Cleanup
         cleanup_trace_runners_async(app.hosts.clone(), app.trace_session.clone());
         Vec::new()
     };
+    if wait_for_cleanup {
+        cleanup_client_tracers_wait(
+            app.client_hosts.clone(),
+            "kfstrace",
+            app.kfstrace_session.clone(),
+        );
+        cleanup_client_tracers_wait(
+            app.client_hosts.clone(),
+            "radostrace",
+            app.radostrace_session.clone(),
+        );
+    } else {
+        cleanup_client_tracers_async(
+            app.client_hosts.clone(),
+            "kfstrace",
+            app.kfstrace_session.clone(),
+        );
+        cleanup_client_tracers_async(
+            app.client_hosts.clone(),
+            "radostrace",
+            app.radostrace_session.clone(),
+        );
+    }
     // Only the quit path may block; stream threads need this window to kill
     // their ssh children before the process exits.
     if wait_for_cleanup && live_streams_active(app) {
         thread::sleep(Duration::from_millis(1200));
     }
     cleanup
+}
+
+fn cleanup_client_tracers_async(hosts: Vec<String>, tool: &'static str, session: Option<String>) {
+    let Some(session) = session else {
+        return;
+    };
+    for host in hosts {
+        let session = session.clone();
+        thread::spawn(move || {
+            cleanup_client_tracer_on_host(&host, tool, &session);
+        });
+    }
+}
+
+fn cleanup_client_tracers_wait(hosts: Vec<String>, tool: &'static str, session: Option<String>) {
+    let Some(session) = session else {
+        return;
+    };
+    let handles = hosts
+        .into_iter()
+        .map(|host| {
+            let session = session.clone();
+            thread::spawn(move || cleanup_client_tracer_on_host(&host, tool, &session))
+        })
+        .collect::<Vec<_>>();
+    for handle in handles {
+        let _ = handle.join();
+    }
+}
+
+fn cleanup_client_tracer_on_host(host: &str, tool: &str, session: &str) {
+    let command = client_tracer_cleanup_command(tool, session);
+    let remote = format!("sh -c {}", shell_quote(&command));
+    let _ = ProcessCommand::new("ssh")
+        .args(["-o", "BatchMode=yes", "-o", "ConnectTimeout=5"])
+        .arg("--")
+        .arg(host)
+        .arg(remote)
+        .output();
 }
 
 pub(crate) fn live_streams_active(app: &App) -> bool {
@@ -463,6 +528,9 @@ pub(crate) fn drain_worker_messages(app: &mut App) {
             WorkerMsg::KfsDone { host, message } => {
                 app.kfstrace_active = app.kfstrace_active.saturating_sub(1);
                 app.log(format!("kfstrace {host}: {message}"));
+                if app.kfstrace_active == 0 {
+                    app.kfstrace_session = None;
+                }
             }
             WorkerMsg::RadosLine { host, line } => {
                 record_raw_trace_line(app, TRACE_RADOS_LOG, &host, &line);
@@ -481,6 +549,9 @@ pub(crate) fn drain_worker_messages(app: &mut App) {
             WorkerMsg::RadosDone { host, message } => {
                 app.radostrace_active = app.radostrace_active.saturating_sub(1);
                 app.log(format!("radostrace {host}: {message}"));
+                if app.radostrace_active == 0 {
+                    app.radostrace_session = None;
+                }
             }
         }
     }
@@ -803,6 +874,8 @@ pub(crate) fn spawn_kfstrace_run(app: &mut App, latency_us: u64) {
     app.kfstrace_stop.store(true, Ordering::SeqCst);
     app.kfstrace_stop = Arc::new(AtomicBool::new(false));
     app.kfstrace_active = app.client_hosts.len();
+    let session = trace_session_id();
+    app.kfstrace_session = Some(session.clone());
     let ttl_secs = app.trace_ttl_secs.max(1);
     app.log(format!(
         "starting kfstrace on {} client hosts: ttl={ttl_secs}s latency>={latency_us}us",
@@ -814,6 +887,7 @@ pub(crate) fn spawn_kfstrace_run(app: &mut App, latency_us: u64) {
             app.tx.clone(),
             latency_us,
             ttl_secs,
+            session.clone(),
             app.kfstrace_stop.clone(),
         );
     }
@@ -821,27 +895,12 @@ pub(crate) fn spawn_kfstrace_run(app: &mut App, latency_us: u64) {
 
 pub(crate) fn stop_kfstrace(app: &mut App) {
     app.kfstrace_stop.store(true, Ordering::SeqCst);
+    cleanup_client_tracers_async(
+        app.client_hosts.clone(),
+        "kfstrace",
+        app.kfstrace_session.clone(),
+    );
     app.log("kfstrace stopping");
-}
-
-fn kfstrace_run_command(latency_us: u64, ttl_secs: u64) -> String {
-    format!(
-        r#"
-bin=$(command -v kfstrace 2>/dev/null || true)
-if [ -z "$bin" ] && [ -x "$HOME/.cephlens/bin/kfstrace" ]; then
-  bin="$HOME/.cephlens/bin/kfstrace"
-fi
-if [ -z "$bin" ]; then
-  echo "__CEPHLENS_KFS_ERROR__ kfstrace missing"
-  exit 127
-fi
-if ! sudo -n true 2>/dev/null; then
-  echo "__CEPHLENS_KFS_ERROR__ sudo -n unavailable"
-  exit 126
-fi
-exec sudo -n "$bin" -m mds -l {latency_us} -t {ttl_secs} 2>&1
-"#
-    )
 }
 
 fn spawn_kfstrace_runner(
@@ -849,82 +908,16 @@ fn spawn_kfstrace_runner(
     tx: Sender<WorkerMsg>,
     latency_us: u64,
     ttl_secs: u64,
+    session: String,
     stop: Arc<AtomicBool>,
 ) {
-    thread::spawn(move || {
-        let command = kfstrace_run_command(latency_us, ttl_secs);
-        let remote = format!("sh -c {}", shell_quote(&command));
-        let child_result = ProcessCommand::new("ssh")
-            .args([
-                "-o",
-                "BatchMode=yes",
-                "-o",
-                "ConnectTimeout=8",
-                "-o",
-                "ServerAliveInterval=5",
-                "-o",
-                "ServerAliveCountMax=2",
-            ])
-            .arg("--")
-            .arg(&host)
-            .arg(remote)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn();
-
-        let mut child = match child_result {
-            Ok(child) => child,
-            Err(err) => {
-                let _ = tx.send(WorkerMsg::KfsDone {
-                    host,
-                    message: format!("failed to start ssh: {err}"),
-                });
-                return;
-            }
-        };
-
-        if let Some(stderr) = child.stderr.take() {
-            let err_tx = tx.clone();
-            let err_host = host.clone();
-            thread::spawn(move || {
-                let reader = BufReader::new(stderr);
-                for line in reader.lines().map_while(Result::ok) {
-                    if !line.trim().is_empty() {
-                        let _ = err_tx.send(WorkerMsg::KfsLine {
-                            host: err_host.clone(),
-                            line,
-                        });
-                    }
-                }
-            });
-        }
-
-        if let Some(stdout) = child.stdout.take() {
-            let reader = BufReader::new(stdout);
-            for line in reader.lines() {
-                if stop.load(Ordering::SeqCst) {
-                    let _ = child.kill();
-                    break;
-                }
-                match line {
-                    Ok(payload) if !payload.trim().is_empty() => {
-                        let _ = tx.send(WorkerMsg::KfsLine {
-                            host: host.clone(),
-                            line: payload,
-                        });
-                    }
-                    Ok(_) => {}
-                    Err(_) => break,
-                }
-            }
-        }
-        let _ = child.wait();
-        let _ = tx.send(WorkerMsg::KfsDone {
-            host,
-            message: "kfstrace exited".to_owned(),
-        });
-    });
+    spawn_client_trace_runner(
+        host,
+        tx,
+        kfstrace_run_command_with_session(latency_us, ttl_secs, Some(&session)),
+        stop,
+        ClientTraceKind::Kfs,
+    );
 }
 
 pub(crate) fn spawn_radostrace_run(app: &mut App) {
@@ -939,49 +932,73 @@ pub(crate) fn spawn_radostrace_run(app: &mut App) {
     app.radostrace_stop.store(true, Ordering::SeqCst);
     app.radostrace_stop = Arc::new(AtomicBool::new(false));
     app.radostrace_active = app.client_hosts.len();
+    let session = trace_session_id();
+    app.radostrace_session = Some(session.clone());
     let ttl_secs = app.trace_ttl_secs.max(1);
     app.log(format!(
         "starting radostrace on {} client hosts: ttl={ttl_secs}s",
         app.client_hosts.len()
     ));
     for host in app.client_hosts.clone() {
-        spawn_radostrace_runner(host, app.tx.clone(), ttl_secs, app.radostrace_stop.clone());
+        spawn_radostrace_runner(
+            host,
+            app.tx.clone(),
+            ttl_secs,
+            session.clone(),
+            app.radostrace_stop.clone(),
+        );
     }
 }
 
 pub(crate) fn stop_radostrace(app: &mut App) {
     app.radostrace_stop.store(true, Ordering::SeqCst);
+    cleanup_client_tracers_async(
+        app.client_hosts.clone(),
+        "radostrace",
+        app.radostrace_session.clone(),
+    );
     app.log("radostrace stopping");
-}
-
-fn radostrace_run_command(ttl_secs: u64) -> String {
-    format!(
-        r#"
-bin=$(command -v radostrace 2>/dev/null || true)
-if [ -z "$bin" ] && [ -x "$HOME/.cephlens/bin/radostrace" ]; then
-  bin="$HOME/.cephlens/bin/radostrace"
-fi
-if [ -z "$bin" ]; then
-  echo "__CEPHLENS_RADOS_ERROR__ radostrace missing"
-  exit 127
-fi
-if ! sudo -n true 2>/dev/null; then
-  echo "__CEPHLENS_RADOS_ERROR__ sudo -n unavailable"
-  exit 126
-fi
-exec sudo -n "$bin" -t {ttl_secs} 2>&1
-"#
-    )
 }
 
 fn spawn_radostrace_runner(
     host: String,
     tx: Sender<WorkerMsg>,
     ttl_secs: u64,
+    session: String,
     stop: Arc<AtomicBool>,
 ) {
+    spawn_client_trace_runner(
+        host,
+        tx,
+        radostrace_run_command_with_session(ttl_secs, Some(&session)),
+        stop,
+        ClientTraceKind::Rados,
+    );
+}
+
+#[derive(Clone, Copy)]
+enum ClientTraceKind {
+    Kfs,
+    Rados,
+}
+
+impl ClientTraceKind {
+    fn exited_message(self) -> &'static str {
+        match self {
+            ClientTraceKind::Kfs => "kfstrace exited",
+            ClientTraceKind::Rados => "radostrace exited",
+        }
+    }
+}
+
+fn spawn_client_trace_runner(
+    host: String,
+    tx: Sender<WorkerMsg>,
+    command: String,
+    stop: Arc<AtomicBool>,
+    kind: ClientTraceKind,
+) {
     thread::spawn(move || {
-        let command = radostrace_run_command(ttl_secs);
         let remote = format!("sh -c {}", shell_quote(&command));
         let child_result = ProcessCommand::new("ssh")
             .args([
@@ -1005,55 +1022,101 @@ fn spawn_radostrace_runner(
         let mut child = match child_result {
             Ok(child) => child,
             Err(err) => {
-                let _ = tx.send(WorkerMsg::RadosDone {
-                    host,
-                    message: format!("failed to start ssh: {err}"),
-                });
+                send_client_trace_done(&tx, kind, host, format!("failed to start ssh: {err}"));
                 return;
             }
         };
 
+        let mut readers = Vec::new();
         if let Some(stderr) = child.stderr.take() {
-            let err_tx = tx.clone();
-            let err_host = host.clone();
-            thread::spawn(move || {
-                let reader = BufReader::new(stderr);
-                for line in reader.lines().map_while(Result::ok) {
-                    if !line.trim().is_empty() {
-                        let _ = err_tx.send(WorkerMsg::RadosLine {
-                            host: err_host.clone(),
-                            line,
-                        });
-                    }
-                }
-            });
+            readers.push(spawn_client_trace_reader(
+                stderr,
+                tx.clone(),
+                host.clone(),
+                kind,
+            ));
+        }
+        if let Some(stdout) = child.stdout.take() {
+            readers.push(spawn_client_trace_reader(
+                stdout,
+                tx.clone(),
+                host.clone(),
+                kind,
+            ));
         }
 
-        if let Some(stdout) = child.stdout.take() {
-            let reader = BufReader::new(stdout);
-            for line in reader.lines() {
-                if stop.load(Ordering::SeqCst) {
-                    let _ = child.kill();
-                    break;
-                }
-                match line {
-                    Ok(payload) if !payload.trim().is_empty() => {
-                        let _ = tx.send(WorkerMsg::RadosLine {
-                            host: host.clone(),
-                            line: payload,
-                        });
-                    }
-                    Ok(_) => {}
-                    Err(_) => break,
+        loop {
+            if stop.load(Ordering::SeqCst) {
+                let _ = child.kill();
+                break;
+            }
+            match child.try_wait() {
+                Ok(Some(_)) => break,
+                Ok(None) => thread::sleep(Duration::from_millis(100)),
+                Err(err) => {
+                    send_client_trace_done(
+                        &tx,
+                        kind,
+                        host,
+                        format!("failed to wait for ssh: {err}"),
+                    );
+                    return;
                 }
             }
         }
+
         let _ = child.wait();
-        let _ = tx.send(WorkerMsg::RadosDone {
-            host,
-            message: "radostrace exited".to_owned(),
-        });
+        for reader in readers {
+            let _ = reader.join();
+        }
+        send_client_trace_done(&tx, kind, host, kind.exited_message().to_owned());
     });
+}
+
+fn spawn_client_trace_reader<R>(
+    stream: R,
+    tx: Sender<WorkerMsg>,
+    host: String,
+    kind: ClientTraceKind,
+) -> thread::JoinHandle<()>
+where
+    R: Read + Send + 'static,
+{
+    thread::spawn(move || {
+        let reader = BufReader::new(stream);
+        for line in reader.lines().map_while(Result::ok) {
+            if !line.trim().is_empty() {
+                send_client_trace_line(&tx, kind, &host, line);
+            }
+        }
+    })
+}
+
+fn send_client_trace_line(tx: &Sender<WorkerMsg>, kind: ClientTraceKind, host: &str, line: String) {
+    let message = match kind {
+        ClientTraceKind::Kfs => WorkerMsg::KfsLine {
+            host: host.to_owned(),
+            line,
+        },
+        ClientTraceKind::Rados => WorkerMsg::RadosLine {
+            host: host.to_owned(),
+            line,
+        },
+    };
+    let _ = tx.send(message);
+}
+
+fn send_client_trace_done(
+    tx: &Sender<WorkerMsg>,
+    kind: ClientTraceKind,
+    host: String,
+    message: String,
+) {
+    let message = match kind {
+        ClientTraceKind::Kfs => WorkerMsg::KfsDone { host, message },
+        ClientTraceKind::Rados => WorkerMsg::RadosDone { host, message },
+    };
+    let _ = tx.send(message);
 }
 
 fn trace_session_id() -> String {
@@ -1204,43 +1267,6 @@ fn spawn_trace_runner(
 }
 
 fn record_trace_event(app: &mut App, event: &TraceEvent) {
-    let osd = normalize_osd_name(&event.osd);
-    if osd == "-" || event.op == "error" {
-        return;
-    }
-
     let now_bucket = Utc::now().timestamp() / TRACE_BUCKET_SECS;
-    let series = app.trace_series.entry(osd).or_default();
-    let needs_new_bucket = series
-        .back()
-        .map(|bucket| bucket.bucket != now_bucket)
-        .unwrap_or(true);
-    if needs_new_bucket {
-        series.push_back(TraceBucket {
-            bucket: now_bucket,
-            ..TraceBucket::default()
-        });
-    }
-    while series.len() > TRACE_BUCKET_COUNT {
-        series.pop_front();
-    }
-
-    if let Some(bucket) = series.back_mut() {
-        bucket.ops += 1;
-        bucket.op_sum_us = bucket.op_sum_us.saturating_add(event.op_lat_us);
-        bucket.op_max_us = bucket.op_max_us.max(event.op_lat_us);
-        bucket.throttle_max_us = bucket.throttle_max_us.max(event.throttle_lat_us);
-        bucket.recv_max_us = bucket.recv_max_us.max(event.recv_lat_us);
-        bucket.dispatch_max_us = bucket.dispatch_max_us.max(event.dispatch_lat_us);
-        bucket.queue_max_us = bucket.queue_max_us.max(event.queue_lat_us);
-        bucket.store_max_us = bucket.store_max_us.max(event.bluestore_lat_us);
-        bucket.kv_commit_max_us = bucket.kv_commit_max_us.max(event.kv_commit_us);
-        let pg = normalize_pg_name(&event.pg);
-        if pg != "-" {
-            let pg_stats = bucket.pgs.entry(pg).or_default();
-            pg_stats.ops += 1;
-            pg_stats.op_sum_us = pg_stats.op_sum_us.saturating_add(event.op_lat_us);
-            pg_stats.op_max_us = pg_stats.op_max_us.max(event.op_lat_us);
-        }
-    }
+    record_trace_event_at(&mut app.trace_series, event, now_bucket);
 }
