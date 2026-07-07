@@ -243,6 +243,9 @@ cleanup() {
   if [ -n "$pidfile" ]; then
     rm -f "$pidfile" 2>/dev/null || true
   fi
+  case "$code" in
+    130|143) code=0 ;;
+  esac
   exit "$code"
 }
 
@@ -276,6 +279,12 @@ echo "__CEPHLENS_RUNNER__ osdtrace_pid=$trace_pid"
 wait "$trace_pid"
 status=$?
 trace_pid=""
+case "$status" in
+  130|143)
+    echo "__CEPHLENS_RUNNER__ osdtrace stopped"
+    exit 0
+    ;;
+esac
 echo "__CEPHLENS_RUNNER__ osdtrace exited status=$status"
 exit "$status"
 "#
@@ -286,4 +295,17 @@ fn safe_session_id(session: &str) -> String {
         .chars()
         .filter(|ch| ch.is_ascii_alphanumeric() || *ch == '-')
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn trace_runner_treats_operator_stop_as_clean() {
+        let script = trace_runner_script();
+
+        assert!(script.contains("130|143) code=0"));
+        assert!(script.contains("__CEPHLENS_RUNNER__ osdtrace stopped"));
+    }
 }
