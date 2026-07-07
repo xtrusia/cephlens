@@ -6,6 +6,8 @@ Notable changes are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.1.4] - 2026-07-07
+
 ### Added
 
 - Added `cephlens report <session>` to export recorded sessions as Markdown.
@@ -20,6 +22,13 @@ Notable changes are documented here. The format follows
   checks.
 - Replaced MicroCeph-specific node readiness wording with Ceph
   version/deployment data.
+
+## [0.1.3] - 2026-07-06
+
+### Added
+
+- Recorded raw trace logs under live TUI session directories.
+- Documented sudo whitelist setup for trace and install commands.
 
 ## [0.1.2] - 2026-07-05
 
@@ -53,7 +62,9 @@ Initial release.
 - Cross-platform controller (Linux, macOS, Windows) with cargo-dist release
   archives that bundle the cephtrace tracers.
 
-[Unreleased]: https://github.com/xtrusia/cephlens/compare/v0.1.2...HEAD
+[Unreleased]: https://github.com/xtrusia/cephlens/compare/v0.1.4...HEAD
+[0.1.4]: https://github.com/xtrusia/cephlens/compare/v0.1.3...v0.1.4
+[0.1.3]: https://github.com/xtrusia/cephlens/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/xtrusia/cephlens/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/xtrusia/cephlens/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/xtrusia/cephlens/releases/tag/v0.1.0
