@@ -213,43 +213,139 @@ sudo -n "$HOME/.cephlens/bin/osdtrace" --list 2>&1
 }
 
 pub(crate) fn kfstrace_run_command(latency_us: u64, ttl_secs: u64) -> String {
-    format!(
-        r#"
-bin=$(command -v kfstrace 2>/dev/null || true)
-if [ -z "$bin" ] && [ -x "$HOME/.cephlens/bin/kfstrace" ]; then
-  bin="$HOME/.cephlens/bin/kfstrace"
-fi
-if [ -z "$bin" ]; then
-  echo "__CEPHLENS_KFS_ERROR__ kfstrace missing"
-  exit 127
-fi
-if ! sudo -n true 2>/dev/null; then
-  echo "__CEPHLENS_KFS_ERROR__ sudo -n unavailable"
-  exit 126
-fi
-exec sudo -n "$bin" -m mds -l {latency_us} -t {ttl_secs} 2>&1
-"#
+    kfstrace_run_command_with_session(latency_us, ttl_secs, None)
+}
+
+pub(crate) fn kfstrace_run_command_with_session(
+    latency_us: u64,
+    ttl_secs: u64,
+    session: Option<&str>,
+) -> String {
+    client_tracer_run_command(
+        "kfstrace",
+        &format!("-m mds -l {latency_us} -t {ttl_secs}"),
+        "__CEPHLENS_KFS_ERROR__",
+        session,
     )
 }
 
 pub(crate) fn radostrace_run_command(ttl_secs: u64) -> String {
+    radostrace_run_command_with_session(ttl_secs, None)
+}
+
+pub(crate) fn radostrace_run_command_with_session(ttl_secs: u64, session: Option<&str>) -> String {
+    client_tracer_run_command(
+        "radostrace",
+        &format!("-t {ttl_secs}"),
+        "__CEPHLENS_RADOS_ERROR__",
+        session,
+    )
+}
+
+pub(crate) fn client_tracer_cleanup_command(tool: &str, session: &str) -> String {
+    let pidfile = client_tracer_pidfile(tool, session);
     format!(
         r#"
-bin=$(command -v radostrace 2>/dev/null || true)
-if [ -z "$bin" ] && [ -x "$HOME/.cephlens/bin/radostrace" ]; then
-  bin="$HOME/.cephlens/bin/radostrace"
+pidfile={pidfile}
+pids=""
+if [ -f "$pidfile" ]; then
+  pids=$(cat "$pidfile" 2>/dev/null || true)
+fi
+if [ -n "$pids" ]; then
+  for pid in $pids; do
+    children=$(pgrep -P "$pid" 2>/dev/null || true)
+    if [ -n "$children" ]; then
+      sudo -n kill -TERM $children 2>/dev/null || kill -TERM $children 2>/dev/null || true
+    fi
+    sudo -n kill -TERM "$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null || true
+  done
+  sleep 1
+  for pid in $pids; do
+    children=$(pgrep -P "$pid" 2>/dev/null || true)
+    if [ -n "$children" ]; then
+      sudo -n kill -KILL $children 2>/dev/null || kill -KILL $children 2>/dev/null || true
+    fi
+    sudo -n kill -KILL "$pid" 2>/dev/null || kill -KILL "$pid" 2>/dev/null || true
+  done
+fi
+rm -f "$pidfile" 2>/dev/null || true
+"#
+    )
+}
+
+fn client_tracer_run_command(
+    tool: &str,
+    args: &str,
+    error_prefix: &str,
+    session: Option<&str>,
+) -> String {
+    let pidfile = session
+        .map(|session| client_tracer_pidfile(tool, session))
+        .unwrap_or_else(|| "''".to_owned());
+    format!(
+        r#"
+bin=$(command -v {tool} 2>/dev/null || true)
+if [ -z "$bin" ] && [ -x "$HOME/.cephlens/bin/{tool}" ]; then
+  bin="$HOME/.cephlens/bin/{tool}"
 fi
 if [ -z "$bin" ]; then
-  echo "__CEPHLENS_RADOS_ERROR__ radostrace missing"
+  echo "{error_prefix} {tool} missing"
   exit 127
 fi
 if ! sudo -n true 2>/dev/null; then
-  echo "__CEPHLENS_RADOS_ERROR__ sudo -n unavailable"
+  echo "{error_prefix} sudo -n unavailable"
   exit 126
 fi
-exec sudo -n "$bin" -t {ttl_secs} 2>&1
+pidfile={pidfile}
+if [ -n "$pidfile" ]; then
+  mkdir -p "$(dirname "$pidfile")"
+  printf '%s\n' "$$" > "$pidfile"
+fi
+trace_pid=""
+cleanup() {{
+  code=$?
+  trap - INT TERM HUP EXIT
+  if [ -n "$trace_pid" ]; then
+    children=$(pgrep -P "$trace_pid" 2>/dev/null || true)
+    if [ -n "$children" ]; then
+      sudo -n kill -TERM $children 2>/dev/null || kill -TERM $children 2>/dev/null || true
+    fi
+    sudo -n kill -TERM "$trace_pid" 2>/dev/null || kill -TERM "$trace_pid" 2>/dev/null || true
+    wait "$trace_pid" 2>/dev/null || true
+  fi
+  case "$code" in
+    130|143) code=0 ;;
+  esac
+  if [ -n "$pidfile" ]; then
+    rm -f "$pidfile" 2>/dev/null || true
+  fi
+  exit "$code"
+}}
+trap cleanup INT TERM HUP EXIT
+sudo -n "$bin" {args} 2>&1 &
+trace_pid=$!
+wait "$trace_pid"
+status=$?
+trace_pid=""
+case "$status" in
+  130|143) exit 0 ;;
+esac
+exit "$status"
 "#
     )
+}
+
+fn client_tracer_pidfile(tool: &str, session: &str) -> String {
+    let safe_tool = safe_client_tracer_token(tool);
+    let safe_session = safe_client_tracer_token(session);
+    format!("\"$HOME/.cache/cephlens/runner/cephlens-{safe_tool}-{safe_session}.pid\"")
+}
+
+fn safe_client_tracer_token(value: &str) -> String {
+    value
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric() || *ch == '-')
+        .collect()
 }
 
 pub(crate) fn tracer_probe_command(tool: &str) -> String {
@@ -807,6 +903,17 @@ mod tests {
             )
         );
         assert!(command.contains("checksum mismatch expected=$sha256 actual=$actual"));
+    }
+
+    #[test]
+    fn client_tracer_commands_cleanup_remote_processes() {
+        let kfs = kfstrace_run_command(1000, 30);
+        let rados = radostrace_run_command(30);
+
+        assert!(kfs.contains("pgrep -P \"$trace_pid\""));
+        assert!(kfs.contains("sudo -n \"$bin\" -m mds -l 1000 -t 30"));
+        assert!(rados.contains("sudo -n \"$bin\" -t 30"));
+        assert!(rados.contains("130|143) code=0"));
     }
 
     #[test]
