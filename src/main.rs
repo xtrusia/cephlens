@@ -1,5 +1,6 @@
 use std::{
     collections::HashMap,
+    fs,
     io::{self, Stdout},
     path::PathBuf,
     sync::{Arc, atomic::AtomicBool, mpsc},
@@ -19,10 +20,14 @@ use ratatui::{Terminal, backend::CrosstermBackend};
 mod app;
 mod collect;
 mod config;
+mod diagnose;
+mod doctor;
 mod editor;
 mod kfstrace;
+mod lab;
 mod model;
 mod radostrace;
+mod report;
 mod runner;
 mod session;
 mod ssh;
@@ -43,9 +48,12 @@ use config::{
     normalize_hosts, parse_hosts, validate_ssh_destination, validate_ssh_destinations,
     write_default_config,
 };
+use doctor::run_doctor;
 use editor::{
     ConfigDraft, ConfigEditor, handle_config_input, handle_config_key, open_config_editor,
 };
+use lab::{LabTrace, run_lab};
+use report::build_report;
 use runner::{CleanupResult, report_cleanup_results};
 use session::{append_snapshot, create_session_dir, create_session_path, load_snapshots};
 use trace::{TraceInstallConfig, validate_sha256};
@@ -109,8 +117,22 @@ enum Commands {
         #[arg(long, default_value_t = 5)]
         seconds: u64,
     },
+    Doctor,
+    Lab {
+        #[arg(long)]
+        host: Option<String>,
+        #[arg(long, default_value_t = 30)]
+        seconds: u64,
+        #[arg(long, value_enum, default_value_t = LabTrace::All)]
+        trace: LabTrace,
+    },
     Replay {
         file: PathBuf,
+    },
+    Report {
+        session: PathBuf,
+        #[arg(long)]
+        out: Option<PathBuf>,
     },
 }
 
@@ -118,6 +140,16 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
     if let Some(Commands::InitConfig { force }) = &cli.command {
         return write_default_config(&cli.config, *force);
+    }
+    if let Some(Commands::Report { session, out }) = &cli.command {
+        let report = build_report(session)?;
+        if let Some(out) = out {
+            fs::write(out, report)?;
+            println!("wrote {}", out.display());
+        } else {
+            println!("{report}");
+        }
+        return Ok(());
     }
     let cfg = resolve_config(&cli)?;
 
@@ -162,7 +194,25 @@ fn main() -> Result<()> {
             println!("{output}");
             Ok(())
         }
+        Commands::Doctor => {
+            println!("{}", run_doctor(&cfg));
+            Ok(())
+        }
+        Commands::Lab {
+            host,
+            seconds,
+            trace,
+        } => {
+            let host = host.unwrap_or_else(|| cfg.admin_host.clone());
+            validate_ssh_destination("bench host", &host)?;
+            let result = run_lab(&cfg, &host, seconds, trace)?;
+            println!("{}", result.bench_output);
+            println!("session {}", result.session_dir.display());
+            println!("report {}", result.report_path.display());
+            Ok(())
+        }
         Commands::Replay { file } => run_replay_tui(file),
+        Commands::Report { .. } => unreachable!("handled before config resolution"),
     }
 }
 
@@ -433,7 +483,27 @@ fn begin_shutdown(
 ) -> Result<Vec<CleanupResult>> {
     app.shutting_down = true;
     let _ = terminal.draw(|frame| ui::draw(frame, app));
-    Ok(shutdown_streams(app, true))
+    let cleanup = shutdown_streams(app, true);
+    write_session_report(app);
+    Ok(cleanup)
+}
+
+fn write_session_report(app: &mut App) {
+    if app.session_records == 0 {
+        return;
+    }
+    let Some(session_dir) = app.session_path.clone() else {
+        return;
+    };
+    let report_path = session_dir.join("report.md");
+    let result = build_report(&session_dir).and_then(|report| {
+        fs::write(&report_path, report)?;
+        Ok(())
+    });
+    match result {
+        Ok(()) => app.log(format!("report written: {}", report_path.display())),
+        Err(err) => app.log(format!("report failed: {err:#}")),
+    }
 }
 
 fn run_app(

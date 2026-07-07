@@ -6,6 +6,21 @@ Notable changes are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Added `cephlens report <session>` to export recorded sessions as Markdown.
+- Live TUI sessions now write `report.md` on exit when snapshots were recorded.
+- Added `cephlens doctor` for SSH, sudo, Ceph CLI, and tracer preflight checks.
+- Added `cephlens lab` to run a short benchmark with optional trace capture and
+  write a session report.
+
+### Changed
+
+- Moved diagnostic insight rules out of the TUI so CLI reports reuse the same
+  checks.
+- Replaced MicroCeph-specific node readiness wording with Ceph
+  version/deployment data.
+
 ## [0.1.2] - 2026-07-05
 
 ### Added

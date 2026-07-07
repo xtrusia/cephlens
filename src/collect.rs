@@ -158,7 +158,8 @@ diff_idle=$((idle_b - idle_a))
 cpu_pct=$(awk -v total="$diff_total" -v idle="$diff_idle" 'BEGIN {{if (total > 0) printf "%.1f", (total-idle)*100/total; else printf "0.0"}}')
 printf 'hostname=%s\n' "$hostname"
 printf 'sudo=%s\n' "$sudo_state"
-printf 'microceph=%s\n' "$micro"
+printf 'ceph_version=%s\n' "$ceph_version"
+printf 'deployment=%s\n' "$deployment"
 printf 'ceph_osd_processes=%s\n' "$count"
 printf 'osd_ids=%s\n' "$ids"
 printf 'cpu_percent=%s\n' "$cpu_pct"
@@ -173,7 +174,8 @@ printf 'mem_percent=%s\n' "$mem_pct"
                 host: host.to_owned(),
                 hostname: map.get("hostname").cloned().unwrap_or_default(),
                 sudo: map.get("sudo").cloned().unwrap_or_default(),
-                microceph: map.get("microceph").cloned().unwrap_or_default(),
+                ceph_version: map.get("ceph_version").cloned().unwrap_or_default(),
+                deployment: map.get("deployment").cloned().unwrap_or_default(),
                 ceph_osd_processes: map
                     .get("ceph_osd_processes")
                     .and_then(|s| s.parse().ok())
@@ -219,7 +221,18 @@ pub(crate) fn run_probe(hosts: &[String]) -> String {
 printf '--- %s ---\n' "$(hostname)"
 printf 'kernel='; uname -r
 printf 'sudo='; if sudo -n true 2>/dev/null; then echo ok; else echo needs_password; fi
-printf 'microceph='; snap list microceph 2>/dev/null | awk 'NR==2 {print $2" "$4" "$6; found=1} END {if (!found) print "missing"}'
+printf 'ceph_version='; ceph --version 2>/dev/null | head -1 || echo missing
+printf 'deployment='
+micro=$(snap list microceph 2>/dev/null | awk 'NR==2 {print $2" "$4" "$6; found=1}')
+if [ -n "$micro" ]; then
+  echo "microceph $micro"
+elif command -v cephadm >/dev/null 2>&1; then
+  echo cephadm
+elif [ -d /var/lib/rook ]; then
+  echo rook
+else
+  echo generic
+fi
 printf 'ceph_osd='; pgrep -af '[c]eph-osd --cluster ceph' || true
 printf 'osdtrace='
 bin=$(command -v osdtrace 2>/dev/null || true)
