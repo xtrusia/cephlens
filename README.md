@@ -20,10 +20,11 @@ remote runner script that removes itself when tracing stops or cephlens exits;
 ## Features
 
 - Live cluster health, quorum, OSD counts, and IO throughput over a single SSH stream.
-- Per-node readiness: connection state, OSD ids, CPU and memory percent, and microceph version.
+- Per-node readiness: connection state, OSD ids, CPU and memory percent, and Ceph version/deployment.
 - osdtrace eBPF latency tracing with per-OSD and per-PG breakdown of queue, BlueStore, and KV-commit latency.
 - No standing agent: no permanent daemon on the nodes; the osdtrace runner script removes itself on stop, quit, or TTL expiry. (The cephtrace tracer binaries you deploy do persist under `~/.cephlens/bin/`.)
 - Edit hosts and trace settings live in the TUI; changes apply to open SSH streams immediately.
+- Export recorded sessions as Markdown reports with the same diagnostic rules used by the TUI.
 
 ## Requirements
 
@@ -218,20 +219,32 @@ check for lab use only; do not use it for production clusters.
 ## Quick start
 
 ```sh
-cargo run -- snapshot
-cargo run -- probe
-cargo run -- record --count 3 --interval-secs 2
+cargo run -- init-config
+cargo run -- doctor
 cargo run -- tui --refresh-secs 1
-cargo run -- bench --host ceph-node-1 --seconds 5
 ```
 
-Create a fresh config template:
+## Workflows
+
+### Preflight
+
+Run `doctor` before a live session or lab capture. It checks SSH, passwordless
+sudo, admin Ceph CLI access, `rados`, osdtrace on OSD hosts, and
+kfstrace/radostrace on `client_hosts`:
 
 ```sh
-cargo run -- init-config
+cargo run -- doctor
 ```
 
-Useful keys in the TUI (the dashboard auto-refreshes every `refresh_secs`):
+### Live TUI
+
+Start the dashboard after `doctor` passes:
+
+```sh
+cargo run -- tui --refresh-secs 1
+```
+
+The dashboard auto-refreshes every `refresh_secs`. Useful keys:
 
 ```text
 p          run a probe readiness check
@@ -265,17 +278,16 @@ Esc/c    return to live dashboard
 Config edits are written to `cephlens.toml` and applied to the live SSH streams
 immediately after the edit is confirmed.
 
-Before installing, cephlens checks the remote kernel, architecture, and
-`/etc/os-release`. The automatic install path only runs when the target is
-Linux, x86_64/amd64, and in the Debian/Ubuntu family. Other platforms are shown
-as unsupported instead of being blindly overwritten.
-
 The integrated trace panel can show osdtrace, kfstrace, or radostrace data.
 The osdtrace view observes Ceph OSD nodes. It streams `op_r`, `op_w`, and
 `subop_w` lines into the live dashboard and summarizes total, queue, and
 BlueStore latency. The kfstrace and radostrace views run on `client_hosts`.
 On wide terminals the trace panel appears on the right; on tall terminals it
 appears below the dashboard.
+Live TUI mode keeps one SSH stream open for cluster status and one stream per
+host for node readiness. Each stream emits data once per second by default and
+the node table shows connection state (`live`, `dial`, `retry`, `error`), OSD
+ids, CPU percentage, and memory percentage.
 When `trace_auto_start` is true, cephlens starts osdtrace runners as soon as the
 TUI opens. The default config keeps it false so an operator explicitly starts
 and stops tracing with `t`, `f`, `r`, or `a`.
@@ -283,15 +295,51 @@ If no events appear, the cluster may be idle or all observed operations may be
 below the configured 1ms latency threshold. Set `trace_latency_ms = 0` to trace
 all observed osdtrace ops, or run Ceph IO while the trace runners are active.
 
+Before installing osdtrace from the TUI, cephlens checks the remote kernel,
+architecture, and `/etc/os-release`. The automatic install path only runs when
+the target is Linux, x86_64/amd64, and in the Debian/Ubuntu family. Other
+platforms are shown as unsupported instead of being blindly overwritten.
+
+### Lab capture
+
+Use `lab` for a short benchmark plus trace capture. It creates a session,
+records before/after snapshots, writes `bench.log`, and writes `report.md`.
+The trace mode can be `none`, `osd`, or `all`:
+
+```sh
+cargo run -- lab --host ceph-node-1 --seconds 30 --trace all
+```
+
+### One-shot commands
+
+Use these for scripts or quick checks outside the TUI:
+
+```sh
+cargo run -- snapshot
+cargo run -- probe
+cargo run -- record --count 3 --interval-secs 2
+cargo run -- bench --host ceph-node-1 --seconds 5
+```
+
+### Sessions and reports
+
 Live TUI sessions are recorded under `.cephlens/sessions/<timestamp>/`.
 Cluster snapshots are appended to `snapshots.jsonl`, and raw trace lines are
 appended as plain text to `trace-osd.log`, `trace-kfs.log`, and
-`trace-rados.log`.
+`trace-rados.log`. When the TUI exits after recording at least one snapshot,
+cephlens also writes `.cephlens/sessions/<timestamp>/report.md`.
 
-Live TUI mode keeps one SSH stream open for cluster status and one stream per
-host for node readiness. Each stream emits data once per second by default and
-the node table shows connection state (`live`, `dial`, `retry`, `error`), OSD
-ids, CPU percentage, and memory percentage.
+Turn a recorded session into a Markdown investigation note:
+
+```sh
+cargo run -- report .cephlens/sessions/<timestamp> --out report.md
+```
+
+Replay a recorded snapshot sequence in the TUI:
+
+```sh
+cargo run -- replay .cephlens/sessions/<timestamp>
+```
 
 ## License
 

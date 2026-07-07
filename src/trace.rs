@@ -212,6 +212,67 @@ sudo -n "$HOME/.cephlens/bin/osdtrace" --list 2>&1
     )
 }
 
+pub(crate) fn kfstrace_run_command(latency_us: u64, ttl_secs: u64) -> String {
+    format!(
+        r#"
+bin=$(command -v kfstrace 2>/dev/null || true)
+if [ -z "$bin" ] && [ -x "$HOME/.cephlens/bin/kfstrace" ]; then
+  bin="$HOME/.cephlens/bin/kfstrace"
+fi
+if [ -z "$bin" ]; then
+  echo "__CEPHLENS_KFS_ERROR__ kfstrace missing"
+  exit 127
+fi
+if ! sudo -n true 2>/dev/null; then
+  echo "__CEPHLENS_KFS_ERROR__ sudo -n unavailable"
+  exit 126
+fi
+exec sudo -n "$bin" -m mds -l {latency_us} -t {ttl_secs} 2>&1
+"#
+    )
+}
+
+pub(crate) fn radostrace_run_command(ttl_secs: u64) -> String {
+    format!(
+        r#"
+bin=$(command -v radostrace 2>/dev/null || true)
+if [ -z "$bin" ] && [ -x "$HOME/.cephlens/bin/radostrace" ]; then
+  bin="$HOME/.cephlens/bin/radostrace"
+fi
+if [ -z "$bin" ]; then
+  echo "__CEPHLENS_RADOS_ERROR__ radostrace missing"
+  exit 127
+fi
+if ! sudo -n true 2>/dev/null; then
+  echo "__CEPHLENS_RADOS_ERROR__ sudo -n unavailable"
+  exit 126
+fi
+exec sudo -n "$bin" -t {ttl_secs} 2>&1
+"#
+    )
+}
+
+pub(crate) fn tracer_probe_command(tool: &str) -> String {
+    format!(
+        r#"
+bin=$(command -v {tool} 2>/dev/null || true)
+if [ -z "$bin" ] && [ -x "$HOME/.cephlens/bin/{tool}" ]; then
+  bin="$HOME/.cephlens/bin/{tool}"
+fi
+if [ -z "$bin" ]; then
+  echo "__CEPHLENS_STATUS__ missing"
+  exit 0
+fi
+echo "__CEPHLENS_BIN__=$bin"
+if ! sudo -n true 2>/dev/null; then
+  echo "__CEPHLENS_ERROR__ sudo -n unavailable"
+  exit 0
+fi
+"$bin" --version 2>/dev/null | head -1 || true
+"#
+    )
+}
+
 pub(crate) fn parse_trace_target(host: &str, output: &str) -> TraceTarget {
     let mut target = TraceTarget {
         host: host.to_owned(),
@@ -433,6 +494,17 @@ pub(crate) fn trace_graph_rows(
     trace_series: &HashMap<String, VecDeque<TraceBucket>>,
     limit: usize,
 ) -> Vec<TraceGraphRow> {
+    let now_bucket = Utc::now().timestamp() / TRACE_BUCKET_SECS;
+    trace_graph_rows_at(snapshot, trace_events, trace_series, limit, now_bucket)
+}
+
+pub(crate) fn trace_graph_rows_at(
+    snapshot: Option<&Snapshot>,
+    trace_events: &[TraceEvent],
+    trace_series: &HashMap<String, VecDeque<TraceBucket>>,
+    limit: usize,
+    now_bucket: i64,
+) -> Vec<TraceGraphRow> {
     let mut hosts = BTreeMap::new();
     if let Some(snapshot) = snapshot {
         for osd in &snapshot.osds {
@@ -449,7 +521,6 @@ pub(crate) fn trace_graph_rows(
         hosts.entry(osd.clone()).or_insert_with(|| "-".to_owned());
     }
 
-    let now_bucket = Utc::now().timestamp() / TRACE_BUCKET_SECS;
     let first_bucket = now_bucket - TRACE_BUCKET_COUNT as i64 + 1;
     let mut rows = hosts
         .into_iter()
@@ -523,6 +594,51 @@ pub(crate) fn trace_graph_rows(
         rows.truncate(limit);
     }
     rows
+}
+
+pub(crate) fn record_trace_event_at(
+    trace_series: &mut HashMap<String, VecDeque<TraceBucket>>,
+    event: &TraceEvent,
+    bucket_id: i64,
+) {
+    let osd = normalize_osd_name(&event.osd);
+    if osd == "-" || event.op == "error" {
+        return;
+    }
+
+    let series = trace_series.entry(osd).or_default();
+    let needs_new_bucket = series
+        .back()
+        .map(|bucket| bucket.bucket != bucket_id)
+        .unwrap_or(true);
+    if needs_new_bucket {
+        series.push_back(TraceBucket {
+            bucket: bucket_id,
+            ..TraceBucket::default()
+        });
+    }
+    while series.len() > TRACE_BUCKET_COUNT {
+        series.pop_front();
+    }
+
+    if let Some(bucket) = series.back_mut() {
+        bucket.ops += 1;
+        bucket.op_sum_us = bucket.op_sum_us.saturating_add(event.op_lat_us);
+        bucket.op_max_us = bucket.op_max_us.max(event.op_lat_us);
+        bucket.throttle_max_us = bucket.throttle_max_us.max(event.throttle_lat_us);
+        bucket.recv_max_us = bucket.recv_max_us.max(event.recv_lat_us);
+        bucket.dispatch_max_us = bucket.dispatch_max_us.max(event.dispatch_lat_us);
+        bucket.queue_max_us = bucket.queue_max_us.max(event.queue_lat_us);
+        bucket.store_max_us = bucket.store_max_us.max(event.bluestore_lat_us);
+        bucket.kv_commit_max_us = bucket.kv_commit_max_us.max(event.kv_commit_us);
+        let pg = normalize_pg_name(&event.pg);
+        if pg != "-" {
+            let pg_stats = bucket.pgs.entry(pg).or_default();
+            pg_stats.ops += 1;
+            pg_stats.op_sum_us = pg_stats.op_sum_us.saturating_add(event.op_lat_us);
+            pg_stats.op_max_us = pg_stats.op_max_us.max(event.op_lat_us);
+        }
+    }
 }
 
 fn hot_pg_label(pg_stats: HashMap<String, TracePgStats>) -> String {

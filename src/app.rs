@@ -32,8 +32,8 @@ use crate::{
     },
     stream::{cluster_stream_command, node_stream_command, parse_node_stream_payload},
     trace::{
-        TRACE_BUCKET_COUNT, TRACE_BUCKET_SECS, TraceBucket, TraceEvent, TraceInstallConfig,
-        TraceTarget, normalize_osd_name, normalize_pg_name, parse_trace_event,
+        TRACE_BUCKET_SECS, TraceBucket, TraceEvent, TraceInstallConfig, TraceTarget,
+        kfstrace_run_command, parse_trace_event, radostrace_run_command, record_trace_event_at,
     },
     util::shell_quote,
 };
@@ -824,26 +824,6 @@ pub(crate) fn stop_kfstrace(app: &mut App) {
     app.log("kfstrace stopping");
 }
 
-fn kfstrace_run_command(latency_us: u64, ttl_secs: u64) -> String {
-    format!(
-        r#"
-bin=$(command -v kfstrace 2>/dev/null || true)
-if [ -z "$bin" ] && [ -x "$HOME/.cephlens/bin/kfstrace" ]; then
-  bin="$HOME/.cephlens/bin/kfstrace"
-fi
-if [ -z "$bin" ]; then
-  echo "__CEPHLENS_KFS_ERROR__ kfstrace missing"
-  exit 127
-fi
-if ! sudo -n true 2>/dev/null; then
-  echo "__CEPHLENS_KFS_ERROR__ sudo -n unavailable"
-  exit 126
-fi
-exec sudo -n "$bin" -m mds -l {latency_us} -t {ttl_secs} 2>&1
-"#
-    )
-}
-
 fn spawn_kfstrace_runner(
     host: String,
     tx: Sender<WorkerMsg>,
@@ -952,26 +932,6 @@ pub(crate) fn spawn_radostrace_run(app: &mut App) {
 pub(crate) fn stop_radostrace(app: &mut App) {
     app.radostrace_stop.store(true, Ordering::SeqCst);
     app.log("radostrace stopping");
-}
-
-fn radostrace_run_command(ttl_secs: u64) -> String {
-    format!(
-        r#"
-bin=$(command -v radostrace 2>/dev/null || true)
-if [ -z "$bin" ] && [ -x "$HOME/.cephlens/bin/radostrace" ]; then
-  bin="$HOME/.cephlens/bin/radostrace"
-fi
-if [ -z "$bin" ]; then
-  echo "__CEPHLENS_RADOS_ERROR__ radostrace missing"
-  exit 127
-fi
-if ! sudo -n true 2>/dev/null; then
-  echo "__CEPHLENS_RADOS_ERROR__ sudo -n unavailable"
-  exit 126
-fi
-exec sudo -n "$bin" -t {ttl_secs} 2>&1
-"#
-    )
 }
 
 fn spawn_radostrace_runner(
@@ -1204,43 +1164,6 @@ fn spawn_trace_runner(
 }
 
 fn record_trace_event(app: &mut App, event: &TraceEvent) {
-    let osd = normalize_osd_name(&event.osd);
-    if osd == "-" || event.op == "error" {
-        return;
-    }
-
     let now_bucket = Utc::now().timestamp() / TRACE_BUCKET_SECS;
-    let series = app.trace_series.entry(osd).or_default();
-    let needs_new_bucket = series
-        .back()
-        .map(|bucket| bucket.bucket != now_bucket)
-        .unwrap_or(true);
-    if needs_new_bucket {
-        series.push_back(TraceBucket {
-            bucket: now_bucket,
-            ..TraceBucket::default()
-        });
-    }
-    while series.len() > TRACE_BUCKET_COUNT {
-        series.pop_front();
-    }
-
-    if let Some(bucket) = series.back_mut() {
-        bucket.ops += 1;
-        bucket.op_sum_us = bucket.op_sum_us.saturating_add(event.op_lat_us);
-        bucket.op_max_us = bucket.op_max_us.max(event.op_lat_us);
-        bucket.throttle_max_us = bucket.throttle_max_us.max(event.throttle_lat_us);
-        bucket.recv_max_us = bucket.recv_max_us.max(event.recv_lat_us);
-        bucket.dispatch_max_us = bucket.dispatch_max_us.max(event.dispatch_lat_us);
-        bucket.queue_max_us = bucket.queue_max_us.max(event.queue_lat_us);
-        bucket.store_max_us = bucket.store_max_us.max(event.bluestore_lat_us);
-        bucket.kv_commit_max_us = bucket.kv_commit_max_us.max(event.kv_commit_us);
-        let pg = normalize_pg_name(&event.pg);
-        if pg != "-" {
-            let pg_stats = bucket.pgs.entry(pg).or_default();
-            pg_stats.ops += 1;
-            pg_stats.op_sum_us = pg_stats.op_sum_us.saturating_add(event.op_lat_us);
-            pg_stats.op_max_us = pg_stats.op_max_us.max(event.op_lat_us);
-        }
-    }
+    record_trace_event_at(&mut app.trace_series, event, now_bucket);
 }

@@ -12,11 +12,11 @@ use crate::app::{
     App, EVENT_LOG_MIN_HEIGHT, EVENT_LOG_RESERVED_ROWS, Mode, PanelFocus, StreamState,
     StreamStatus, TraceAction, TraceSource, live_streams_active,
 };
+use crate::diagnose::{DiagnoseInput, Insight, InsightLevel, diagnose, format_latency_us};
 use crate::editor::ConfigDraft;
 use crate::kfstrace::kfs_op_rows;
-use crate::model::NodeSummary;
 use crate::radostrace::rados_pool_rows;
-use crate::trace::{TraceGraphRow, dominant_component, trace_graph_rows as build_trace_graph_rows};
+use crate::trace::{TraceGraphRow, trace_graph_rows as build_trace_graph_rows};
 use crate::util::{clamp_bottom_scroll, clamp_top_scroll, short};
 
 const ACCENT: Color = Color::Rgb(93, 228, 199);
@@ -26,20 +26,6 @@ const WARN: Color = Color::Rgb(255, 203, 107);
 const BAD: Color = Color::Rgb(255, 83, 112);
 const MUTED: Color = Color::Rgb(91, 99, 112);
 const TEXT: Color = Color::Rgb(198, 208, 219);
-
-#[derive(Clone, Copy, Debug)]
-enum InsightLevel {
-    Ok,
-    Info,
-    Warn,
-    Bad,
-}
-
-#[derive(Clone, Debug)]
-struct Insight {
-    level: InsightLevel,
-    text: String,
-}
 
 pub(crate) fn draw(frame: &mut Frame<'_>, app: &App) {
     let area = frame.area();
@@ -568,273 +554,17 @@ fn draw_insights(frame: &mut Frame<'_>, app: &App, area: Rect) {
 }
 
 fn operator_insights(app: &App) -> Vec<Insight> {
-    let mut insights = Vec::new();
-
-    if let Some(snapshot) = &app.snapshot {
-        if snapshot.cluster.health != "HEALTH_OK" {
-            let level = if snapshot.cluster.health == "HEALTH_WARN" {
-                InsightLevel::Warn
-            } else {
-                InsightLevel::Bad
-            };
-            insights.push(Insight {
-                level,
-                text: format!(
-                    "cluster health {}; run ceph health detail on {}",
-                    snapshot.cluster.health, app.admin_host
-                ),
-            });
-        }
-        if !snapshot.cluster.pg_states.contains("active+clean") {
-            insights.push(Insight {
-                level: InsightLevel::Warn,
-                text: format!(
-                    "PG state {}; trace latency may include recovery/peering",
-                    snapshot.cluster.pg_states
-                ),
-            });
-        }
-    } else {
-        insights.push(Insight {
-            level: InsightLevel::Info,
-            text: "waiting for first cluster snapshot".to_owned(),
-        });
-    }
-
-    let (live_streams, total_streams) = stream_counts(app);
-    if total_streams > 0 && live_streams < total_streams {
-        insights.push(Insight {
-            level: InsightLevel::Warn,
-            text: format!(
-                "ssh streams {live_streams}/{total_streams} live; check hosts marked retry/error"
-            ),
-        });
-    }
-
-    if let Some(error) = app
-        .trace_events
-        .iter()
-        .rev()
-        .find(|event| event.op == "error")
-    {
-        insights.push(Insight {
-            level: InsightLevel::Bad,
-            text: format!("trace error on {}: {}", error.host, short(&error.raw, 72)),
-        });
-    }
-
-    let osd_rows = trace_graph_rows(app, usize::MAX);
-    let active_rows = osd_rows
-        .iter()
-        .filter(|row| row.ops > 0)
-        .collect::<Vec<_>>();
-    if !active_rows.is_empty() {
-        insights.extend(osd_trace_insights(app, &active_rows));
-    }
-    insights.extend(kfs_insights(app));
-    insights.extend(rados_insights(app));
-    if let Some(cross) = cross_source_insight(app, &active_rows) {
-        insights.push(cross);
-    }
-    if active_rows.is_empty() && app.kfstrace_events.is_empty() && app.radostrace_events.is_empty()
-    {
-        insights.push(Insight {
-            level: InsightLevel::Info,
-            text: "no trace data; press t/f/r to start osd/kfs/rados, a for all".to_owned(),
-        });
-    }
-
-    insights
-}
-
-fn osd_trace_insights(app: &App, active_rows: &[&TraceGraphRow]) -> Vec<Insight> {
-    let mut insights = Vec::new();
-    let total_ops = active_rows.iter().map(|row| row.ops).sum::<u64>();
-    let worst = active_rows
-        .iter()
-        .max_by(|left, right| {
-            left.max_us
-                .cmp(&right.max_us)
-                .then_with(|| left.ops.cmp(&right.ops))
-        })
-        .copied()
-        .expect("active_rows is not empty");
-    let worst_level = insight_level_for_latency(worst.max_us);
-    insights.push(Insight {
-        level: worst_level,
-        text: format!(
-            "last 60s: {total_ops} ops on {} OSDs; worst {} max {} avg {}",
-            active_rows.len(),
-            worst.osd,
-            format_latency_us(worst.max_us),
-            format_latency_us(worst.avg_us)
-        ),
-    });
-
-    let dominant = dominant_component(worst);
-    if dominant.value_us > 0 {
-        insights.push(Insight {
-            level: insight_level_for_latency(dominant.value_us),
-            text: format!(
-                "dominant {} {}; suspect {}",
-                dominant.name,
-                format_latency_us(dominant.value_us),
-                dominant.suspect
-            ),
-        });
-    } else if worst.max_us >= 10_000 {
-        insights.push(Insight {
-            level: InsightLevel::Warn,
-            text: "slow op seen, but parsed queue/store/network components are empty; inspect raw osdtrace"
-                .to_owned(),
-        });
-    }
-
-    if worst.hot_pg != "-" {
-        insights.push(Insight {
-            level: InsightLevel::Info,
-            text: format!(
-                "top PG on {}: {}; compare acting set if it stays hot",
-                worst.osd, worst.hot_pg
-            ),
-        });
-    }
-
-    if let Some(node) = node_for_host(app, &worst.host) {
-        if node.cpu_percent >= 85.0 {
-            insights.push(Insight {
-                level: InsightLevel::Bad,
-                text: format!(
-                    "{} CPU {}%; queue latency may include OSD worker/scheduler pressure",
-                    worst.host,
-                    percent_label(node.cpu_percent).trim()
-                ),
-            });
-        } else if node.mem_percent >= 85.0 {
-            insights.push(Insight {
-                level: InsightLevel::Warn,
-                text: format!(
-                    "{} memory {}%; check OSD memory pressure before deeper trace",
-                    worst.host,
-                    percent_label(node.mem_percent).trim()
-                ),
-            });
-        }
-    }
-
-    let slow_osds = active_rows
-        .iter()
-        .filter(|row| row.max_us >= 10_000)
-        .count();
-    if slow_osds >= 2 {
-        insights.push(Insight {
-            level: InsightLevel::Warn,
-            text: format!(
-                "{slow_osds} OSDs over 10ms; shared network/device/controller pressure is possible"
-            ),
-        });
-    } else if worst.max_us < 10_000 {
-        insights.push(Insight {
-            level: InsightLevel::Ok,
-            text: "no obvious slow OSD in the trace window; max latency is below 10ms".to_owned(),
-        });
-    }
-
-    insights
-}
-
-fn kfs_insights(app: &App) -> Vec<Insight> {
-    let mut insights = Vec::new();
-    let rows = kfs_op_rows(&app.kfstrace_events);
-    let Some(worst) = rows.iter().max_by_key(|row| row.max_us) else {
-        return insights;
-    };
-    let total: u64 = rows.iter().map(|row| row.count).sum();
-    insights.push(Insight {
-        level: insight_level_for_latency(worst.max_us),
-        text: format!(
-            "kfstrace: {total} MDS ops; slowest {} max {} avg {}",
-            worst.op,
-            format_latency_us(worst.max_us),
-            format_latency_us(worst.avg_us)
-        ),
-    });
-    let unsafe_total: u64 = rows.iter().map(|row| row.unsafe_count).sum();
-    if unsafe_total > 0 {
-        insights.push(Insight {
-            level: InsightLevel::Warn,
-            text: format!(
-                "kfstrace: {unsafe_total} unsafe metadata ops awaiting MDS journal commit"
-            ),
-        });
-    }
-    insights
-}
-
-fn rados_insights(app: &App) -> Vec<Insight> {
-    let mut insights = Vec::new();
-    let rows = rados_pool_rows(&app.radostrace_events);
-    let Some(worst) = rows.iter().max_by_key(|row| row.max_us) else {
-        return insights;
-    };
-    let total: u64 = rows.iter().map(|row| row.count).sum();
-    insights.push(Insight {
-        level: insight_level_for_latency(worst.max_us),
-        text: format!(
-            "radostrace: {total} client ops; pool {} max {} avg {} ({}W/{}R)",
-            worst.pool,
-            format_latency_us(worst.max_us),
-            format_latency_us(worst.avg_us),
-            worst.writes,
-            worst.reads
-        ),
-    });
-    insights
-}
-
-fn cross_source_insight(app: &App, osd_active: &[&TraceGraphRow]) -> Option<Insight> {
-    let rados = rados_pool_rows(&app.radostrace_events);
-    let client_max = rados.iter().map(|row| row.max_us).max().unwrap_or(0);
-    let server_max = osd_active.iter().map(|row| row.max_us).max().unwrap_or(0);
-    if client_max == 0 || server_max == 0 {
-        return None;
-    }
-    let client = format_latency_us(client_max);
-    let server = format_latency_us(server_max);
-    if client_max > server_max.saturating_mul(2) {
-        Some(Insight {
-            level: InsightLevel::Warn,
-            text: format!(
-                "cross: rados client {client} vs osd server {server}; gap = network/messenger/queue"
-            ),
-        })
-    } else {
-        Some(Insight {
-            level: InsightLevel::Info,
-            text: format!(
-                "cross: rados client {client} vs osd server {server}; client tracks server"
-            ),
-        })
-    }
-}
-
-fn insight_level_for_latency(latency_us: u64) -> InsightLevel {
-    if latency_us >= 100_000 {
-        InsightLevel::Bad
-    } else if latency_us >= 10_000 {
-        InsightLevel::Warn
-    } else if latency_us > 0 {
-        InsightLevel::Ok
-    } else {
-        InsightLevel::Info
-    }
-}
-
-fn node_for_host<'a>(app: &'a App, host: &str) -> Option<&'a NodeSummary> {
-    app.node_summaries.get(host).or_else(|| {
-        app.node_summaries
-            .values()
-            .find(|node| node.host == host || node.hostname == host)
+    let trace_rows = trace_graph_rows(app, usize::MAX);
+    diagnose(DiagnoseInput {
+        snapshot: app.snapshot.as_ref(),
+        admin_host: &app.admin_host,
+        node_summaries: &app.node_summaries,
+        stream_counts: Some(stream_counts(app)),
+        trace_events: &app.trace_events,
+        trace_rows: &trace_rows,
+        kfs_events: &app.kfstrace_events,
+        rados_events: &app.radostrace_events,
+        idle_message: Some("no trace data; press t/f/r to start osd/kfs/rados, a for all"),
     })
 }
 
@@ -1842,16 +1572,6 @@ fn metric_color(value: f64) -> Color {
 
 fn percent_label(value: f64) -> String {
     format!("{value:>4.1}")
-}
-
-fn format_latency_us(value: u64) -> String {
-    if value >= 1000 {
-        format!("{:.1}ms", value as f64 / 1000.0)
-    } else if value == 0 {
-        "-".to_owned()
-    } else {
-        format!("{value}us")
-    }
 }
 
 fn pill(text: &str, color: Color) -> Span<'static> {
