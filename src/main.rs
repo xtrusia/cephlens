@@ -209,7 +209,15 @@ fn main() -> Result<()> {
             println!("{}", result.bench_output);
             println!("session {}", result.session_dir.display());
             println!("report {}", result.report_path.display());
-            Ok(())
+            if let Some(err) = result.bench_error {
+                Err(anyhow!(
+                    "bench failed; session {} and report {} were written: {err:#}",
+                    result.session_dir.display(),
+                    result.report_path.display()
+                ))
+            } else {
+                Ok(())
+            }
         }
         Commands::Replay { file } => run_replay_tui(file),
         Commands::Report { .. } => unreachable!("handled before config resolution"),

@@ -4,7 +4,7 @@ use std::{
     thread,
 };
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Error, Result};
 use clap::ValueEnum;
 
 use crate::{
@@ -31,6 +31,7 @@ pub(crate) struct LabResult {
     pub(crate) session_dir: PathBuf,
     pub(crate) report_path: PathBuf,
     pub(crate) bench_output: String,
+    pub(crate) bench_error: Option<Error>,
 }
 
 pub(crate) fn run_lab(
@@ -82,12 +83,11 @@ pub(crate) fn run_lab(
     }
 
     thread::sleep(std::time::Duration::from_millis(600));
-    let bench_result = run_bench(bench_host, seconds);
-    let bench_text = match &bench_result {
-        Ok(output) => output.clone(),
-        Err(err) => format!("bench failed: {err:#}"),
+    let (bench_output, bench_error) = match run_bench(bench_host, seconds) {
+        Ok(output) => (output, None),
+        Err(err) => (format!("bench failed: {err:#}"), Some(err)),
     };
-    fs::write(session_dir.join("bench.log"), &bench_text)
+    fs::write(session_dir.join("bench.log"), &bench_output)
         .with_context(|| "failed to write bench.log")?;
 
     for handle in handles {
@@ -103,7 +103,8 @@ pub(crate) fn run_lab(
     Ok(LabResult {
         session_dir,
         report_path,
-        bench_output: bench_result?,
+        bench_output,
+        bench_error,
     })
 }
 

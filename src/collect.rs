@@ -221,7 +221,9 @@ pub(crate) fn run_probe(hosts: &[String]) -> String {
 printf '--- %s ---\n' "$(hostname)"
 printf 'kernel='; uname -r
 printf 'sudo='; if sudo -n true 2>/dev/null; then echo ok; else echo needs_password; fi
-printf 'ceph_version='; ceph --version 2>/dev/null | head -1 || echo missing
+printf 'ceph_version='
+ceph_version=$(ceph --version 2>/dev/null | head -1)
+if [ -n "$ceph_version" ]; then echo "$ceph_version"; else echo missing; fi
 printf 'deployment='
 micro=$(snap list microceph 2>/dev/null | awk 'NR==2 {print $2" "$4" "$6; found=1}')
 if [ -n "$micro" ]; then

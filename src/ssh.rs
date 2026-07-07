@@ -1,4 +1,4 @@
-use std::process::Command as ProcessCommand;
+use std::{io::Write, process::Command as ProcessCommand, thread};
 
 use anyhow::{Context, Result, anyhow};
 
@@ -46,18 +46,27 @@ pub(crate) fn ssh_output(
         .spawn()
         .with_context(|| format!("failed to start ssh for {host}"))?;
 
-    if let Some(stdin) = stdin
+    let stdin_writer = if let Some(stdin) = stdin
         && let Some(mut child_stdin) = child.stdin.take()
     {
-        use std::io::Write;
-        child_stdin
-            .write_all(stdin.as_bytes())
-            .with_context(|| format!("failed to write ssh stdin for {host}"))?;
-    }
+        let input = stdin.as_bytes().to_vec();
+        Some(thread::spawn(move || child_stdin.write_all(&input)))
+    } else {
+        None
+    };
 
     let output = child
         .wait_with_output()
         .with_context(|| format!("failed to wait for ssh {host}"))?;
+    if let Some(writer) = stdin_writer {
+        match writer.join() {
+            Ok(Ok(())) => {}
+            Ok(Err(err)) => {
+                return Err(err).with_context(|| format!("failed to write ssh stdin for {host}"));
+            }
+            Err(_) => return Err(anyhow!("ssh stdin writer panicked for {host}")),
+        }
+    }
     Ok(SshCommandOutput {
         success: output.status.success(),
         status: output.status.to_string(),

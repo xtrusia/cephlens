@@ -79,6 +79,7 @@ pub(crate) fn build_report(path: &Path) -> Result<String> {
     push_line(&mut out, "");
 
     push_cluster(&mut out, last);
+    push_nodes(&mut out, &last.nodes);
     push_insights(&mut out, &insights);
     push_osd_trace(&mut out, &osd_rows);
     push_kfs_trace(&mut out, &logs.kfs_events);
@@ -176,6 +177,42 @@ fn push_cluster(out: &mut String, snapshot: &Snapshot) {
             cluster.read_ops_sec, cluster.write_ops_sec
         ),
     );
+    push_line(out, "");
+}
+
+fn push_nodes(out: &mut String, nodes: &[NodeSummary]) {
+    push_line(out, "## nodes");
+    push_line(out, "");
+    if nodes.is_empty() {
+        push_line(out, "No node readiness data was recorded.");
+        push_line(out, "");
+        return;
+    }
+    push_line(
+        out,
+        "| Host | Hostname | Sudo | OSDs | CPU | Mem | Deployment | Ceph version | Error |",
+    );
+    push_line(
+        out,
+        "| --- | --- | --- | --- | ---: | ---: | --- | --- | --- |",
+    );
+    for node in nodes {
+        push_line(
+            out,
+            &format!(
+                "| {} | {} | {} | {} | {:.1}% | {:.1}% | {} | {} | {} |",
+                md_cell(&node.host),
+                md_cell(value_or_dash(&node.hostname)),
+                md_cell(value_or_dash(&node.sudo)),
+                md_cell(value_or_dash(&node.osd_ids)),
+                node.cpu_percent,
+                node.mem_percent,
+                md_cell(value_or_dash(&node.deployment)),
+                md_cell(value_or_dash(&node.ceph_version)),
+                md_cell(node.error.as_deref().unwrap_or("-"))
+            ),
+        );
+    }
     push_line(out, "");
 }
 
@@ -303,6 +340,10 @@ fn md_cell(value: &str) -> String {
     value.replace('|', "\\|").replace('\n', " ")
 }
 
+fn value_or_dash(value: &str) -> &str {
+    if value.trim().is_empty() { "-" } else { value }
+}
+
 fn push_line(out: &mut String, line: &str) {
     out.push_str(line);
     out.push('\n');
@@ -341,6 +382,10 @@ mod tests {
             },
             nodes: vec![NodeSummary {
                 host: "node-a".to_owned(),
+                hostname: "node-a".to_owned(),
+                sudo: "ok".to_owned(),
+                ceph_version: "ceph version test".to_owned(),
+                deployment: "generic".to_owned(),
                 cpu_percent: 90.0,
                 ..NodeSummary::default()
             }],
@@ -369,6 +414,9 @@ mod tests {
         let report = build_report(&dir).unwrap();
 
         assert!(report.contains("dominant queue 20.0ms"));
+        assert!(report.contains(
+            "| node-a | node-a | ok | - | 90.0% | 0.0% | generic | ceph version test | - |"
+        ));
         assert!(report.contains("| osd.1 | node-a | 1 | 25.0ms | 25.0ms |"));
         let _ = fs::remove_dir_all(dir);
     }
