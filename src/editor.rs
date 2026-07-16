@@ -512,6 +512,7 @@ fn save_profile_config(path: &Path, draft: &ConfigDraft) -> Result<()> {
     validate_config_draft(draft)?;
     let mut config = load_config_file(path)?.unwrap_or_else(|| ConfigFile {
         default_profile: Some(draft.profile.clone()),
+        session_keep: None,
         profiles: BTreeMap::new(),
     });
     if config.default_profile.is_none() {

@@ -9,6 +9,7 @@ pub(crate) const DEFAULT_TRACE_TTL_SECS: u64 = 30 * 60;
 
 pub(crate) const DEFAULT_CONFIG: &str = r#"# cephlens cluster profiles
 default_profile = "example"
+session_keep = 20
 
 [profiles.example]
 admin_host = "ceph-admin"
@@ -28,6 +29,8 @@ trace_ttl_secs = 1800
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct ConfigFile {
     pub(crate) default_profile: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) session_keep: Option<usize>,
     pub(crate) profiles: BTreeMap<String, ClusterProfile>,
 }
 
@@ -58,6 +61,7 @@ pub(crate) struct ResolvedConfig {
     pub(crate) trace_window_secs: u64,
     pub(crate) trace_latency_ms: u64,
     pub(crate) trace_ttl_secs: u64,
+    pub(crate) session_keep: usize,
     pub(crate) trace_install: TraceInstallConfig,
 }
 
@@ -147,5 +151,22 @@ mod tests {
         assert!(validate_ssh_destination("host", "-oProxyCommand=sh").is_err());
         assert!(validate_ssh_destination("host", "ceph admin").is_err());
         assert!(validate_ssh_destination("host", "ceph\nadmin").is_err());
+    }
+
+    #[test]
+    fn config_parses_session_keep() {
+        let config: ConfigFile = toml::from_str(
+            r#"
+default_profile = "example"
+session_keep = 7
+
+[profiles.example]
+admin_host = "ceph-admin"
+hosts = ["ceph-admin"]
+"#,
+        )
+        .unwrap();
+
+        assert_eq!(config.session_keep, Some(7));
     }
 }

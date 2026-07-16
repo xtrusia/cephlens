@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, process};
 
 use anyhow::{Context, Result};
 use chrono::Utc;
@@ -9,7 +9,7 @@ use crate::{
     model::{ClusterSummary, NodeSummary, OsdSummary, Snapshot},
     ssh::ssh_capture,
     stream::NODE_FACTS_SNIPPET,
-    util::{ptr_f64, ptr_i64, ptr_str, ptr_u64},
+    util::{ptr_f64, ptr_i64, ptr_str, ptr_u64, shell_quote},
 };
 
 pub(crate) fn collect_snapshot(cfg: &ResolvedConfig) -> Result<Snapshot> {
@@ -200,18 +200,58 @@ printf 'mem_percent=%s\n' "$mem_pct"
     }
 }
 
-pub(crate) fn run_bench(host: &str, seconds: u64) -> Result<String> {
-    let command = format!(
+pub(crate) fn run_bench(
+    host: &str,
+    seconds: u64,
+    session: Option<&str>,
+    keep_pool: bool,
+) -> Result<String> {
+    let session = session.map(ToOwned::to_owned).unwrap_or_else(|| {
+        Utc::now()
+            .timestamp_nanos_opt()
+            .unwrap_or_default()
+            .to_string()
+    });
+    let pool = bench_pool_name(&session, process::id());
+    ssh_capture(host, &bench_command(&pool, seconds, keep_pool))
+}
+
+fn bench_pool_name(session: &str, pid: u32) -> String {
+    format!("cephlens-test-{session}-{pid}")
+}
+
+fn bench_command(pool: &str, seconds: u64, keep_pool: bool) -> String {
+    let pool = shell_quote(pool);
+    let keep_pool = if keep_pool { "yes" } else { "no" };
+    format!(
         r#"
-set -e
-pool=cephlens-test
-sudo -n ceph osd pool create "$pool" 32 >/dev/null 2>&1 || true
-sudo -n ceph osd pool application enable "$pool" rados >/dev/null 2>&1 || true
+set -eu
+pool={pool}
+keep_pool={keep_pool}
+pool_created=no
+cleanup() {{
+  code=$?
+  trap - INT TERM HUP EXIT
+  if [ "$pool_created" = yes ]; then
+    if ! sudo -n rados -p "$pool" cleanup >/dev/null 2>&1; then
+      echo "cephlens bench cleanup failed for pool $pool" >&2
+      if [ "$code" -eq 0 ]; then code=1; fi
+    fi
+    if [ "$keep_pool" = no ] && ! sudo -n ceph osd pool delete "$pool" "$pool" --yes-i-really-really-mean-it >/dev/null 2>&1; then
+      echo "cephlens bench pool deletion failed for $pool" >&2
+      if [ "$code" -eq 0 ]; then code=1; fi
+    fi
+  fi
+  exit "$code"
+}}
+trap cleanup INT TERM HUP EXIT
+sudo -n ceph osd pool create "$pool" 32 >/dev/null
+pool_created=yes
+sudo -n ceph osd pool application enable "$pool" rados >/dev/null
+echo "cephlens bench pool=$pool"
 sudo -n rados -p "$pool" bench {seconds} write -b 4096 -t 4 --no-cleanup
-sudo -n rados -p "$pool" cleanup >/dev/null 2>&1 || true
 "#
-    );
-    ssh_capture(host, &command)
+    )
 }
 
 pub(crate) fn run_probe(hosts: &[String]) -> String {
@@ -265,4 +305,32 @@ fn parse_key_values(output: &str) -> HashMap<String, String> {
         .filter_map(|line| line.split_once('='))
         .map(|(key, value)| (key.trim().to_owned(), value.trim().to_owned()))
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bench_command_cleans_up_unique_pool_on_exit() {
+        let pool = bench_pool_name("20260716-120000", 42);
+        let command = bench_command(&pool, 5, false);
+
+        assert_eq!(pool, "cephlens-test-20260716-120000-42");
+        assert!(command.contains("pool='cephlens-test-20260716-120000-42'"));
+        assert!(command.contains("trap cleanup INT TERM HUP EXIT"));
+        assert!(command.contains("cephlens bench pool=$pool"));
+        assert!(command.contains("rados -p \"$pool\" cleanup"));
+        assert!(
+            command
+                .contains("ceph osd pool delete \"$pool\" \"$pool\" --yes-i-really-really-mean-it")
+        );
+    }
+
+    #[test]
+    fn bench_command_can_retain_pool() {
+        let command = bench_command("cephlens-test-20260716-120000-42", 5, true);
+
+        assert!(command.contains("keep_pool=yes"));
+    }
 }

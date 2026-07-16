@@ -13,6 +13,7 @@ pub(crate) const SNAPSHOTS_FILE: &str = "snapshots.jsonl";
 pub(crate) const TRACE_OSD_LOG: &str = "trace-osd.log";
 pub(crate) const TRACE_KFS_LOG: &str = "trace-kfs.log";
 pub(crate) const TRACE_RADOS_LOG: &str = "trace-rados.log";
+pub(crate) const DEFAULT_SESSION_KEEP: usize = 20;
 
 pub(crate) fn append_snapshot(path: &Path, snapshot: &Snapshot) -> Result<()> {
     let mut file = OpenOptions::new().create(true).append(true).open(path)?;
@@ -62,21 +63,19 @@ pub(crate) fn session_snapshot_path(session_dir: &Path) -> PathBuf {
     session_dir.join(SNAPSHOTS_FILE)
 }
 
-pub(crate) fn create_session_dir() -> Result<PathBuf> {
+pub(crate) fn create_session_dir(session_keep: usize) -> Result<PathBuf> {
     let root = PathBuf::from(".cephlens").join("sessions");
     fs::create_dir_all(&root)?;
-    prune_old_sessions(&root);
+    prune_old_sessions(&root, session_keep);
     let name = Local::now().format("%Y%m%d-%H%M%S").to_string();
     let dir = root.join(name);
     fs::create_dir_all(&dir)?;
     Ok(dir)
 }
 
-pub(crate) fn create_session_path() -> Result<PathBuf> {
-    Ok(session_snapshot_path(&create_session_dir()?))
+pub(crate) fn create_session_path(session_keep: usize) -> Result<PathBuf> {
+    Ok(session_snapshot_path(&create_session_dir(session_keep)?))
 }
-
-const SESSION_FILE_KEEP: usize = 20;
 
 fn snapshot_input_path(path: &Path) -> PathBuf {
     if path.is_dir() {
@@ -86,7 +85,8 @@ fn snapshot_input_path(path: &Path) -> PathBuf {
     }
 }
 
-fn prune_old_sessions(dir: &Path) {
+fn prune_old_sessions(dir: &Path, session_keep: usize) {
+    let session_keep = session_keep.max(1);
     let Ok(entries) = fs::read_dir(dir) else {
         return;
     };
@@ -94,13 +94,13 @@ fn prune_old_sessions(dir: &Path) {
         .filter_map(|entry| entry.ok().map(|entry| entry.path()))
         .filter(|path| path.extension().is_some_and(|ext| ext == "jsonl") || is_session_dir(path))
         .collect::<Vec<_>>();
-    if sessions.len() < SESSION_FILE_KEEP {
+    if sessions.len() < session_keep {
         return;
     }
     // File names are timestamps, so lexical order is chronological. Keep room
     // for the session about to be created.
     sessions.sort();
-    let excess = sessions.len() + 1 - SESSION_FILE_KEEP;
+    let excess = sessions.len() + 1 - session_keep;
     for path in sessions.into_iter().take(excess) {
         if path.is_dir() {
             let _ = fs::remove_dir_all(path);
@@ -173,5 +173,18 @@ mod tests {
         assert_eq!(snapshots.len(), 1);
         assert_eq!(snapshots[0].profile, "test");
         let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn pruning_honors_configured_session_limit() {
+        let root = temp_session_dir();
+        fs::create_dir_all(root.join("20260707-120000")).unwrap();
+        fs::create_dir_all(root.join("20260707-120001")).unwrap();
+
+        prune_old_sessions(&root, 2);
+
+        assert!(!root.join("20260707-120000").exists());
+        assert!(root.join("20260707-120001").exists());
+        let _ = fs::remove_dir_all(root);
     }
 }
