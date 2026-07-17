@@ -17,6 +17,32 @@ Trace collection runs cephtrace tracers over SSH. `osdtrace` uses a temporary
 remote runner script that removes itself when tracing stops or cephlens exits;
 `kfstrace` and `radostrace` run directly on configured client hosts.
 
+## Quick start
+
+You need three things first. Non-interactive SSH to every Ceph host, passwordless `sudo -n` on those hosts, and the `ceph` and `rados` CLIs on the admin host. Details are in Requirements and in Access and sudo.
+
+```sh
+# install (Linux / macOS; see Install for Windows and source builds)
+curl --proto '=https' --tlsv1.2 -LsSf https://cephlens.seyeong.kim/install.sh | sh
+```
+
+Run these commands from the directory where you want to keep the config and local session data.
+
+```sh
+cephlens init-config
+$EDITOR cephlens.toml
+cephlens doctor
+cephlens tui
+```
+
+In a source clone, use `cargo run -- init-config`, edit the generated file, then run `cargo run -- doctor` and `cargo run -- tui`.
+
+## Non-goals
+
+- No standing monitoring. cephlens does not run a permanent daemon, keep long-term metrics, or send alerts. Use Prometheus, Grafana, or the Ceph dashboard for that.
+- No cluster management. It observes the cluster. The only writes are the temporary `cephlens-test-*` benchmark pools created by `bench` and `lab`.
+- Not reviewed for production use yet. See Status.
+
 ## Features
 
 - Live cluster health, quorum, OSD counts, and IO throughput over a single SSH stream.
@@ -85,19 +111,6 @@ cargo build --release
 ```
 
 A source build does not bundle cephtrace. Supply the tracers on the hosts as described in Requirements.
-
-## Quick start
-
-Run these commands from the directory where you want to keep the config and local session data.
-
-```sh
-cephlens init-config
-$EDITOR cephlens.toml
-cephlens doctor
-cephlens tui
-```
-
-In a source clone, use `cargo run -- init-config`, edit the generated file, then run `cargo run -- doctor` and `cargo run -- tui`.
 
 ## Status
 
