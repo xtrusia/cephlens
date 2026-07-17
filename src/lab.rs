@@ -39,9 +39,10 @@ pub(crate) fn run_lab(
     bench_host: &str,
     seconds: u64,
     trace: LabTrace,
+    keep_pool: bool,
 ) -> Result<LabResult> {
     let seconds = seconds.max(1);
-    let session_dir = create_session_dir()?;
+    let session_dir = create_session_dir(cfg.session_keep)?;
     let snapshot_path = session_snapshot_path(&session_dir);
     append_snapshot(&snapshot_path, &collect_snapshot(cfg)?)?;
 
@@ -83,10 +84,12 @@ pub(crate) fn run_lab(
     }
 
     thread::sleep(std::time::Duration::from_millis(600));
-    let (bench_output, bench_error) = match run_bench(bench_host, seconds) {
-        Ok(output) => (output, None),
-        Err(err) => (format!("bench failed: {err:#}"), Some(err)),
-    };
+    let session = session_name(&session_dir);
+    let (bench_output, bench_error) =
+        match run_bench(bench_host, seconds, Some(&session), keep_pool) {
+            Ok(output) => (output, None),
+            Err(err) => (format!("bench failed: {err:#}"), Some(err)),
+        };
     fs::write(session_dir.join("bench.log"), &bench_output)
         .with_context(|| "failed to write bench.log")?;
 

@@ -36,14 +36,28 @@ Controller (where the TUI runs):
 Ceph nodes:
 
 - `ceph` and `rados` CLIs, plus passwordless `sudo -n` for the observed commands (see Access and sudo).
-- For tracing, the `osdtrace`, `kfstrace`, and `radostrace` binaries from [cephtrace](https://github.com/taodd/cephtrace). They are eBPF-based and need a Linux 5.8+ kernel on the Ceph hosts. Release archives bundle them (see Install); a source build does not, so place them under `~/.cephlens/bin/` or `PATH` yourself. cephlens can also install osdtrace from a pinned URL (see Configuration).
+- For tracing, the `osdtrace`, `kfstrace`, and `radostrace` binaries from [cephtrace](https://github.com/taodd/cephtrace). They are eBPF-based and need a Linux 5.8+ kernel on the Ceph hosts. A compatible kernel alone does not guarantee that a tracer supports the installed Ceph build. Check the compatibility result from `cephlens doctor` before capture.
+
+## Supported platforms and trace limits
+
+| Controller platform | Prebuilt release |
+| --- | --- |
+| Linux x86_64 | Yes |
+| Windows x86_64 | Yes |
+| macOS x86_64 | Yes |
+| macOS ARM64 | Yes |
+| Linux ARM64 | No |
+| Windows ARM64 | No |
+
+Release archives include Linux x86_64 cephtrace binaries. A source build does not include tracer binaries. Place compatible tracers under `~/.cephlens/bin/` or `PATH` on the remote hosts, or configure the pinned osdtrace install described below.
+
+Automatic osdtrace installation is limited to x86_64 or amd64 hosts in the Debian or Ubuntu family. Actual trace support also depends on the Ceph version and the tracer compatibility reported by `cephlens doctor`. Some Ceph builds need separate matching DWARF data.
+
+cephlens runs kfstrace with `-m mds`. Its kfstrace view covers CephFS MDS metadata operations. The upstream tracer's OSD and all modes are not exposed by cephlens.
 
 ## Install
 
-Prebuilt binaries for Linux, macOS, and Windows are attached to each
-[release](https://github.com/xtrusia/cephlens/releases). The archives bundle the
-cephtrace tracers, so a downloaded build is self-contained — useful for
-air-gapped clusters.
+Prebuilt binaries are attached to each [release](https://github.com/xtrusia/cephlens/releases). The archives include the Linux x86_64 cephtrace binaries for deployment to compatible remote hosts.
 
 Install script (picks the right binary for your platform):
 
@@ -70,9 +84,20 @@ cargo install --git https://github.com/xtrusia/cephlens
 cargo build --release
 ```
 
-A source build does not bundle cephtrace — supply the tracers on the hosts
-yourself (see Requirements). The `cargo run --` examples below become `cephlens`
-with an installed binary.
+A source build does not bundle cephtrace. Supply the tracers on the hosts as described in Requirements.
+
+## Quick start
+
+Run these commands from the directory where you want to keep the config and local session data.
+
+```sh
+cephlens init-config
+$EDITOR cephlens.toml
+cephlens doctor
+cephlens tui
+```
+
+In a source clone, use `cargo run -- init-config`, edit the generated file, then run `cargo run -- doctor` and `cargo run -- tui`.
 
 ## Status
 
@@ -82,25 +107,20 @@ cleanup behavior described below.
 
 ## Configuration
 
-Copy the example config and edit it for your cluster.
-
-Linux and macOS:
+Create the config with the installed command, then edit it for your cluster.
 
 ```sh
-cp cephlens.example.toml cephlens.toml
+cephlens init-config
+$EDITOR cephlens.toml
 ```
 
-Windows (PowerShell):
+If you cloned the source repository, `cp cephlens.example.toml cephlens.toml` is also available.
 
-```powershell
-Copy-Item cephlens.example.toml cephlens.toml
-```
-
-`cephlens.toml` defines the Ceph hosts to observe and is intentionally ignored
-by git because it may contain site-specific hostnames:
+`cephlens.toml` defines the Ceph hosts to observe and is intentionally ignored by git because it may contain site-specific hostnames.
 
 ```toml
 default_profile = "example"
+session_keep = 20
 
 [profiles.example]
 admin_host = "ceph-admin"
@@ -126,6 +146,10 @@ trace_ttl_secs = 1800
 machines that get persistent node-readiness SSH streams and osdtrace runners.
 `client_hosts` is optional; when set, it is where kfstrace and radostrace run.
 Leave it out if you only want the OSD-side osdtrace view.
+
+The default config path is `./cephlens.toml`. Local sessions are stored under `./.cephlens/sessions/`. These relative paths use the current working directory, so running cephlens from another directory selects a different config and session store unless `--config` is given.
+
+`session_keep` sets the maximum number of local sessions. Its default is 20 and values below 1 are treated as 1. Creating a live TUI, record, or lab session removes the oldest sessions when the limit is reached.
 
 ## Access and sudo
 
@@ -157,12 +181,9 @@ For a lab, a broad passwordless sudo rule is convenient:
 cephlens ALL=(root) NOPASSWD: ALL
 ```
 
-For production, prefer a dedicated user and a command whitelist. This sudoers
-example assumes the bundled tracers are copied under
-`/home/cephlens/.cephlens/bin/`. Adjust the other paths with
-`command -v true ceph rados kill` on your hosts. If you install tracers on
-`PATH` instead, replace the tracer paths with `command -v osdtrace kfstrace
-radostrace` results:
+The following rule is narrower than unrestricted sudo, but it still grants powerful cluster and process-control capabilities. Treat it as a lab example, not a production-hardened policy. It allows unrestricted arguments for `ceph`, `rados`, `kill`, and each tracer.
+
+The example assumes the bundled tracers are copied under `/home/cephlens/.cephlens/bin/`. Replace every executable with its absolute path on the target host. Do not copy the output of `command -v true` or `command -v kill` without checking it because a shell can return a builtin name instead of an absolute path.
 
 ```sudoers
 cephlens ALL=(root) NOPASSWD: /usr/bin/true, /usr/bin/ceph, /usr/bin/rados, /usr/bin/kill, /home/cephlens/.cephlens/bin/osdtrace, /home/cephlens/.cephlens/bin/kfstrace, /home/cephlens/.cephlens/bin/radostrace
@@ -178,12 +199,14 @@ admin host:
   sudo -n ceph -s --format json
   sudo -n ceph osd tree --format json
   sudo -n ceph osd df --format json
+  sudo -n rados --version
 
 bench command:
-  sudo -n ceph osd pool create ...
-  sudo -n ceph osd pool application enable ...
-  sudo -n rados -p cephlens-test bench ...
-  sudo -n rados -p cephlens-test cleanup
+  sudo -n ceph osd pool create cephlens-test-<session>-<pid> 32
+  sudo -n ceph osd pool application enable cephlens-test-<session>-<pid> rados
+  sudo -n rados -p cephlens-test-<session>-<pid> bench ...
+  sudo -n rados -p cephlens-test-<session>-<pid> cleanup
+  sudo -n ceph osd pool delete cephlens-test-<session>-<pid> cephlens-test-<session>-<pid> --yes-i-really-really-mean-it
 
 trace install / probe:
   sudo -n <osdtrace_path> --list
@@ -216,21 +239,11 @@ When a download is required, cephlens requires `osdtrace_sha256` and verifies th
 download before installing it. `osdtrace_allow_unverified = true` bypasses that
 check for lab use only; do not use it for production clusters.
 
-## Quick start
-
-```sh
-cargo run -- init-config
-cargo run -- doctor
-cargo run -- tui --refresh-secs 1
-```
-
 ## Workflows
 
 ### Preflight
 
-Run `doctor` before a live session or lab capture. It checks SSH, passwordless
-sudo, admin Ceph CLI access, `rados`, osdtrace on OSD hosts, and
-kfstrace/radostrace on `client_hosts`:
+Run `doctor` before a live session or lab capture. It checks SSH, passwordless sudo, admin Ceph CLI access, permission to run `sudo -n rados --version`, osdtrace on OSD hosts, and kfstrace or radostrace on `client_hosts`. A `bad` result exits with a nonzero status. A `warn` result exits successfully.
 
 ```sh
 cargo run -- doctor
@@ -238,7 +251,7 @@ cargo run -- doctor
 
 ### Live TUI
 
-Start the dashboard after `doctor` passes:
+Start the dashboard after `doctor` exits successfully.
 
 ```sh
 cargo run -- tui --refresh-secs 1
@@ -254,8 +267,8 @@ a          start or stop all trace sources (confirmed)
 i          install osdtrace
 x          clear captured trace events
 ?          toggle the help overlay
-[/-        shrink event log
-]/+        grow event log
+[/-        shrink the focused panel
+]/+        grow the focused panel
 Tab        focus next panel
 Shift+Tab  focus previous panel
 Up/Down or j/k    scroll focused panel
@@ -278,10 +291,7 @@ Esc/c    return to live dashboard
 Config edits are written to `cephlens.toml` and applied to the live SSH streams
 immediately after the edit is confirmed.
 
-The integrated trace panel can show osdtrace, kfstrace, or radostrace data.
-The osdtrace view observes Ceph OSD nodes. It streams `op_r`, `op_w`, and
-`subop_w` lines into the live dashboard and summarizes total, queue, and
-BlueStore latency. The kfstrace and radostrace views run on `client_hosts`.
+The integrated trace panel can show osdtrace, kfstrace, or radostrace data. The osdtrace view observes Ceph OSD nodes. It streams `op_r`, `op_w`, and `subop_w` lines into the live dashboard and summarizes total, queue, and BlueStore latency. The kfstrace and radostrace views run on `client_hosts`. The kfstrace view uses MDS mode and shows CephFS metadata operations.
 On wide terminals the trace panel appears on the right; on tall terminals it
 appears below the dashboard.
 Live TUI mode keeps one SSH stream open for cluster status and one stream per
@@ -302,9 +312,11 @@ platforms are shown as unsupported instead of being blindly overwritten.
 
 ### Lab capture
 
-Use `lab` for a short benchmark plus trace capture. It creates a session,
-records before/after snapshots, writes `bench.log`, and writes `report.md`.
-The trace mode can be `none`, `osd`, or `all`:
+`lab` and `bench` write data to the cluster. Each run creates a unique `cephlens-test-<session>-<pid>` pool with 32 PGs and enables the `rados` application. Do not run either command on a production cluster without reviewing the pool and workload settings.
+
+By default, cephlens cleans benchmark objects and deletes the pool on normal or error exit. Ceph must allow pool deletion through `mon_allow_pool_delete`. If cleanup or deletion fails, cephlens returns a failure and reports the pool name. See the [Ceph pool deletion documentation](https://docs.ceph.com/en/latest/rados/operations/pools/#deleting-a-pool). Pass `--keep-pool` to clean the benchmark objects but retain the pool.
+
+Use `lab` for a short benchmark plus trace capture. It creates a session, records before and after snapshots, writes `bench.log`, and writes `report.md`. The trace mode can be `none`, `osd`, or `all`.
 
 ```sh
 cargo run -- lab --host ceph-node-1 --seconds 30 --trace all
@@ -321,6 +333,8 @@ cargo run -- record --count 3 --interval-secs 2
 cargo run -- bench --host ceph-node-1 --seconds 5
 ```
 
+Add `--keep-pool` to the `bench` or `lab` command only when the temporary pool must remain for inspection.
+
 ### Sessions and reports
 
 Live TUI sessions are recorded under `.cephlens/sessions/<timestamp>/`.
@@ -328,6 +342,8 @@ Cluster snapshots are appended to `snapshots.jsonl`, and raw trace lines are
 appended as plain text to `trace-osd.log`, `trace-kfs.log`, and
 `trace-rados.log`. When the TUI exits after recording at least one snapshot,
 cephlens also writes `.cephlens/sessions/<timestamp>/report.md`.
+
+cephlens retains up to `session_keep` local sessions and removes the oldest sessions when a new session is created. The default is 20. Copy important sessions elsewhere before further captures.
 
 Turn a recorded session into a Markdown investigation note:
 
@@ -343,16 +359,11 @@ cargo run -- replay .cephlens/sessions/<timestamp>
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT. See [LICENSE](LICENSE).
 
 cephlens drives the `osdtrace`, `kfstrace`, and `radostrace` binaries from the
 [cephtrace](https://github.com/taodd/cephtrace) project, which is licensed
 separately under GPL-2.0. cephlens runs them as external commands over SSH and
 does not link against them.
 
-Release archives bundle those cephtrace binaries so installation is
-self-contained (including for air-gapped clusters). That bundling is mere
-aggregation and does not change cephlens's MIT license; the GPL-2.0 license text
-and attribution are in [`third_party/cephtrace`](third_party/cephtrace), and the
-corresponding source is at the URL above. Building from source does not bundle
-them — supply the tracers yourself (`~/.cephlens/bin/<tool>` or `PATH`).
+Release archives include the Linux x86_64 cephtrace binaries. That bundling is mere aggregation and does not change cephlens's MIT license. The GPL-2.0 license text and attribution are in [`third_party/cephtrace`](third_party/cephtrace), and the corresponding source is at the URL above. Building from source does not include them. Supply the tracers yourself under `~/.cephlens/bin/<tool>` or `PATH`.

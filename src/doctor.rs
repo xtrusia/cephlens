@@ -16,7 +16,12 @@ struct DoctorCheck {
     detail: String,
 }
 
-pub(crate) fn run_doctor(cfg: &ResolvedConfig) -> String {
+pub(crate) struct DoctorReport {
+    pub(crate) text: String,
+    pub(crate) has_bad: bool,
+}
+
+pub(crate) fn run_doctor(cfg: &ResolvedConfig) -> DoctorReport {
     let mut checks = Vec::new();
     checks.push(DoctorCheck {
         level: CheckLevel::Ok,
@@ -49,8 +54,8 @@ pub(crate) fn run_doctor(cfg: &ResolvedConfig) -> String {
         &mut checks,
         "admin rados",
         &cfg.admin_host,
-        "command -v rados >/dev/null",
-        "rados cli",
+        "sudo -n rados --version >/dev/null",
+        "passwordless rados",
     );
 
     for host in &cfg.hosts {
@@ -192,7 +197,7 @@ fn push_client_tracer_check(checks: &mut Vec<DoctorCheck>, host: &str, tool: &st
     }
 }
 
-fn render_doctor_report(checks: &[DoctorCheck]) -> String {
+fn render_doctor_report(checks: &[DoctorCheck]) -> DoctorReport {
     let mut out = String::from("cephlens doctor\n");
     let worst = checks
         .iter()
@@ -208,7 +213,10 @@ fn render_doctor_report(checks: &[DoctorCheck]) -> String {
             check.detail
         ));
     }
-    out
+    DoctorReport {
+        text: out,
+        has_bad: worst == CheckLevel::Bad,
+    }
 }
 
 fn output_detail(stdout: &str, stderr: &str, status: &str) -> String {
@@ -269,8 +277,21 @@ mod tests {
             },
         ]);
 
-        assert!(report.contains("status: warn"));
-        assert!(report.contains("[ok]"));
-        assert!(report.contains("[warn]"));
+        assert!(!report.has_bad);
+        assert!(report.text.contains("status: warn"));
+        assert!(report.text.contains("[ok]"));
+        assert!(report.text.contains("[warn]"));
+    }
+
+    #[test]
+    fn bad_report_requires_failure_exit() {
+        let report = render_doctor_report(&[DoctorCheck {
+            level: CheckLevel::Bad,
+            scope: "admin rados".to_owned(),
+            detail: "permission denied".to_owned(),
+        }]);
+
+        assert!(report.has_bad);
+        assert!(report.text.contains("status: bad"));
     }
 }

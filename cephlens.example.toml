@@ -1,4 +1,5 @@
 default_profile = "example"
+session_keep = 20
 
 [profiles.example]
 admin_host = "ceph-admin"

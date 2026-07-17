@@ -55,7 +55,9 @@ use editor::{
 use lab::{LabTrace, run_lab};
 use report::build_report;
 use runner::{CleanupResult, report_cleanup_results};
-use session::{append_snapshot, create_session_dir, create_session_path, load_snapshots};
+use session::{
+    DEFAULT_SESSION_KEEP, append_snapshot, create_session_dir, create_session_path, load_snapshots,
+};
 use trace::{TraceInstallConfig, validate_sha256};
 
 #[derive(Parser, Debug)]
@@ -92,6 +94,29 @@ mod tests {
         let command = Cli::command();
         assert_eq!(command.get_version(), Some(env!("CARGO_PKG_VERSION")));
     }
+
+    #[test]
+    fn bench_and_lab_accept_keep_pool() {
+        let bench =
+            Cli::try_parse_from(["cephlens", "bench", "--host", "ceph-node-1", "--keep-pool"])
+                .unwrap();
+        assert!(matches!(
+            bench.command,
+            Some(Commands::Bench {
+                keep_pool: true,
+                ..
+            })
+        ));
+
+        let lab = Cli::try_parse_from(["cephlens", "lab", "--keep-pool"]).unwrap();
+        assert!(matches!(
+            lab.command,
+            Some(Commands::Lab {
+                keep_pool: true,
+                ..
+            })
+        ));
+    }
 }
 
 #[derive(Subcommand, Debug)]
@@ -116,6 +141,8 @@ enum Commands {
         host: String,
         #[arg(long, default_value_t = 5)]
         seconds: u64,
+        #[arg(long, help = "Retain the temporary pool after object cleanup")]
+        keep_pool: bool,
     },
     Doctor,
     Lab {
@@ -125,6 +152,8 @@ enum Commands {
         seconds: u64,
         #[arg(long, value_enum, default_value_t = LabTrace::All)]
         trace: LabTrace,
+        #[arg(long, help = "Retain the temporary pool after object cleanup")]
+        keep_pool: bool,
     },
     Replay {
         file: PathBuf,
@@ -171,7 +200,7 @@ fn main() -> Result<()> {
             interval_secs,
             out,
         } => {
-            let path = out.unwrap_or(create_session_path()?);
+            let path = out.unwrap_or(create_session_path(cfg.session_keep)?);
             for i in 0..count {
                 let snapshot = collect_snapshot(&cfg)?;
                 append_snapshot(&path, &snapshot)?;
@@ -188,24 +217,34 @@ fn main() -> Result<()> {
             }
             Ok(())
         }
-        Commands::Bench { host, seconds } => {
+        Commands::Bench {
+            host,
+            seconds,
+            keep_pool,
+        } => {
             validate_ssh_destination("bench host", &host)?;
-            let output = run_bench(&host, seconds)?;
+            let output = run_bench(&host, seconds, None, keep_pool)?;
             println!("{output}");
             Ok(())
         }
         Commands::Doctor => {
-            println!("{}", run_doctor(&cfg));
-            Ok(())
+            let report = run_doctor(&cfg);
+            println!("{}", report.text);
+            if report.has_bad {
+                Err(anyhow!("doctor found failed checks"))
+            } else {
+                Ok(())
+            }
         }
         Commands::Lab {
             host,
             seconds,
             trace,
+            keep_pool,
         } => {
             let host = host.unwrap_or_else(|| cfg.admin_host.clone());
             validate_ssh_destination("bench host", &host)?;
-            let result = run_lab(&cfg, &host, seconds, trace)?;
+            let result = run_lab(&cfg, &host, seconds, trace, keep_pool)?;
             println!("{}", result.bench_output);
             println!("session {}", result.session_dir.display());
             println!("report {}", result.report_path.display());
@@ -290,6 +329,11 @@ fn resolve_config(cli: &Cli) -> Result<ResolvedConfig> {
         .and_then(|profile| profile.trace_ttl_secs)
         .unwrap_or(DEFAULT_TRACE_TTL_SECS)
         .max(1);
+    let session_keep = file
+        .as_ref()
+        .and_then(|cfg| cfg.session_keep)
+        .unwrap_or(DEFAULT_SESSION_KEEP)
+        .max(1);
     let osdtrace_url = profile.and_then(|profile| clean_optional(&profile.osdtrace_url));
     let osdtrace_sha256 = profile.and_then(|profile| clean_optional(&profile.osdtrace_sha256));
     if let Some(sha256) = &osdtrace_sha256 {
@@ -313,12 +357,13 @@ fn resolve_config(cli: &Cli) -> Result<ResolvedConfig> {
         trace_window_secs,
         trace_latency_ms,
         trace_ttl_secs,
+        session_keep,
         trace_install,
     })
 }
 
 fn run_live_tui(config_path: PathBuf, cfg: ResolvedConfig) -> Result<()> {
-    let session_path = create_session_dir()?;
+    let session_path = create_session_dir(cfg.session_keep)?;
     let (tx, rx) = mpsc::channel();
     let config_editor = ConfigEditor::new(ConfigDraft::from_resolved(&cfg));
     let mut app = App {
@@ -408,6 +453,7 @@ fn run_replay_tui(file: PathBuf) -> Result<()> {
         trace_window_secs: 10,
         trace_latency_ms: 1,
         trace_ttl_secs: DEFAULT_TRACE_TTL_SECS,
+        session_keep: DEFAULT_SESSION_KEEP,
         trace_install: TraceInstallConfig::default(),
     };
     let mut app = App {
