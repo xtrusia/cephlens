@@ -1,4 +1,8 @@
-# cephlens
+<p align="center">
+  <img src="docs/cephlens-icon.png" width="160" alt="CephLens logo">
+</p>
+
+<h1 align="center">CephLens</h1>
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 ![Rust](https://img.shields.io/badge/rust-1.85%2B-orange.svg)
